@@ -44,6 +44,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))] {
         mod sgx;
         pub use self::sgx::*;
+    } else if #[cfg(all(target_os = "optee", target_env = "trustzone"))] {
+        mod optee;
+        pub use self::optee::*;
     } else {
         compile_error!("libstd doesn't compile for this platform yet");
     }
@@ -60,6 +63,7 @@ cfg_if::cfg_if! {
         #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as unix_ext;
     } else if #[cfg(any(target_os = "cloudabi",
+                        target_os = "optee",
                         target_arch = "wasm32",
                         all(target_vendor = "fortanix", target_env = "sgx")))] {
         // On CloudABI and wasm right now the module below doesn't compile
@@ -84,6 +88,7 @@ cfg_if::cfg_if! {
         #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as windows_ext;
     } else if #[cfg(any(target_os = "cloudabi",
+                        target_os = "optee",
                         target_arch = "wasm32",
                         all(target_vendor = "fortanix", target_env = "sgx")))] {
         // On CloudABI and wasm right now the shim below doesn't compile, so

@@ -69,6 +69,7 @@ cfg_if::cfg_if! {
     if #[cfg(any(target_os = "cloudabi",
                  target_os = "l4re",
                  target_os = "redox",
+                 target_os = "optee",
                  all(target_arch = "wasm32", not(target_os = "emscripten")),
                  all(target_vendor = "fortanix", target_env = "sgx")))] {
         pub use crate::sys::net;
