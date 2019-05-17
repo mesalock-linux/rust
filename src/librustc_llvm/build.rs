@@ -103,6 +103,7 @@ fn main() {
                                 "mcjit",
                                 "lto",
                                 "interpreter",
+                                "obfuscation",
                                 "instrumentation"];
 
     let components = output(Command::new(&llvm_config).arg("--components"));

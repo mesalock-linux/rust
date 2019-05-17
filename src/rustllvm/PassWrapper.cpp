@@ -48,6 +48,7 @@ extern "C" void LLVMInitializePasses() {
   initializeInstCombine(Registry);
   initializeInstrumentation(Registry);
   initializeTarget(Registry);
+  initializeObfuscation(Registry);
 }
 
 enum class LLVMRustPassKind {
