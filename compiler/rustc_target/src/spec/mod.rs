@@ -923,6 +923,8 @@ supported_targets! {
 
     ("nvptx64-nvidia-cuda", nvptx64_nvidia_cuda),
 
+    ("aarch64-unknown-optee-trustzone", aarch64_unknown_optee_trustzone),
+
     ("i686-wrs-vxworks", i686_wrs_vxworks),
     ("x86_64-wrs-vxworks", x86_64_wrs_vxworks),
     ("armv7-wrs-vxworks-eabihf", armv7_wrs_vxworks_eabihf),

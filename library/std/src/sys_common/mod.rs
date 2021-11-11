@@ -43,7 +43,8 @@ cfg_if::cfg_if! {
                  target_os = "hermit",
                  feature = "restricted-std",
                  all(target_arch = "wasm32", not(target_os = "emscripten")),
-                 all(target_vendor = "fortanix", target_env = "sgx")))] {
+                 all(target_vendor = "fortanix", target_env = "sgx"),
+                 target_os = "optee"))] {
         pub use crate::sys::net;
     } else {
         pub mod net;
