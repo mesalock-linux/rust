@@ -33,13 +33,10 @@ fn lint_levels(tcx: TyCtxt<'_>, (): ()) -> LintLevelMap {
     let mut builder = LintLevelMapBuilder { levels, tcx, store };
     let krate = tcx.hir().krate();
 
-    builder.levels.id_to_set.reserve(krate.exported_macros.len() + 1);
+    builder.levels.id_to_set.reserve(krate.owners.len() + 1);
 
     let push = builder.levels.push(tcx.hir().attrs(hir::CRATE_HIR_ID), &store, true);
     builder.levels.register_id(hir::CRATE_HIR_ID);
-    for macro_def in krate.exported_macros {
-        builder.levels.register_id(macro_def.hir_id());
-    }
     intravisit::walk_crate(&mut builder, krate);
     builder.levels.pop(push);
 
@@ -235,8 +232,6 @@ impl<'s> LintLevelsBuilder<'s> {
                 None => continue,
                 Some(lvl) => lvl,
             };
-
-            self.sess.mark_attr_used(attr);
 
             let mut metas = unwrap_or!(attr.meta_item_list(), continue);
 
@@ -576,7 +571,7 @@ pub fn is_known_lint_tool(m_item: Symbol, sess: &Session, attrs: &[ast::Attribut
     // NOTE: does no error handling; error handling is done by rustc_resolve.
     sess.filter_by_name(attrs, sym::register_tool)
         .filter_map(|attr| attr.meta_item_list())
-        .flat_map(std::convert::identity)
+        .flatten()
         .filter_map(|nested_meta| nested_meta.ident())
         .map(|ident| ident.name)
         .any(|name| name == m_item)

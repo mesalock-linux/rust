@@ -12,7 +12,7 @@ use rustc_middle::mir::{
 use rustc_middle::ty::{self, suggest_constraining_type_param, Ty};
 use rustc_span::source_map::DesugaringKind;
 use rustc_span::symbol::sym;
-use rustc_span::{MultiSpan, Span, DUMMY_SP};
+use rustc_span::{BytePos, MultiSpan, Span, DUMMY_SP};
 use rustc_trait_selection::infer::InferCtxtExt;
 
 use crate::dataflow::drop_flag_effects;
@@ -320,7 +320,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                                         .map(|n| format!("`{}`", n))
                                         .unwrap_or_else(|| "the mutable reference".to_string()),
                                 ),
-                                format!("&mut *"),
+                                "&mut *".to_string(),
                                 Applicability::MachineApplicable,
                             );
                         }
@@ -825,7 +825,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 // We're going to want to traverse the first borrowed place to see if we can find
                 // field access to a union. If we find that, then we will keep the place of the
                 // union being accessed and the field that was being accessed so we can check the
-                // second borrowed place for the same union and a access to a different field.
+                // second borrowed place for the same union and an access to a different field.
                 for (place_base, elem) in first_borrowed_place.iter_projections().rev() {
                     match elem {
                         ProjectionElem::Field(field, _) if union_ty(place_base).is_some() => {
@@ -838,7 +838,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             })
             .and_then(|(target_base, target_field)| {
                 // With the place of a union and a field access into it, we traverse the second
-                // borrowed place and look for a access to a different field of the same union.
+                // borrowed place and look for an access to a different field of the same union.
                 for (place_base, elem) in second_borrowed_place.iter_projections().rev() {
                     if let ProjectionElem::Field(field, _) = elem {
                         if let Some(union_ty) = union_ty(place_base) {
@@ -1393,18 +1393,19 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         let tcx = self.infcx.tcx;
         let args_span = use_span.args_or_use();
 
-        let suggestion = match tcx.sess.source_map().span_to_snippet(args_span) {
-            Ok(mut string) => {
+        let (sugg_span, suggestion) = match tcx.sess.source_map().span_to_snippet(args_span) {
+            Ok(string) => {
                 if string.starts_with("async ") {
-                    string.insert_str(6, "move ");
+                    let pos = args_span.lo() + BytePos(6);
+                    (args_span.with_lo(pos).with_hi(pos), "move ".to_string())
                 } else if string.starts_with("async|") {
-                    string.insert_str(5, " move");
+                    let pos = args_span.lo() + BytePos(5);
+                    (args_span.with_lo(pos).with_hi(pos), " move".to_string())
                 } else {
-                    string.insert_str(0, "move ");
-                };
-                string
+                    (args_span.shrink_to_lo(), "move ".to_string())
+                }
             }
-            Err(_) => "move |<args>| <body>".to_string(),
+            Err(_) => (args_span, "move |<args>| <body>".to_string()),
         };
         let kind = match use_span.generator_kind() {
             Some(generator_kind) => match generator_kind {
@@ -1420,8 +1421,8 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
 
         let mut err =
             self.cannot_capture_in_long_lived_closure(args_span, kind, captured_var, var_span);
-        err.span_suggestion(
-            args_span,
+        err.span_suggestion_verbose(
+            sugg_span,
             &format!(
                 "to force the {} to take ownership of {} (and any \
                  other referenced variables), use the `move` keyword",

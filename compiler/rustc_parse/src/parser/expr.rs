@@ -15,6 +15,8 @@ use rustc_ast::{AnonConst, BinOp, BinOpKind, FnDecl, FnRetTy, MacCall, Param, Ty
 use rustc_ast::{Arm, Async, BlockCheckMode, Expr, ExprKind, Label, Movability, RangeLimits};
 use rustc_ast_pretty::pprust;
 use rustc_errors::{Applicability, DiagnosticBuilder, PResult};
+use rustc_session::lint::builtin::BREAK_WITH_LABEL_AND_LOOP;
+use rustc_session::lint::BuiltinLintDiagnostics;
 use rustc_span::edition::LATEST_STABLE_EDITION;
 use rustc_span::source_map::{self, Span, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
@@ -39,7 +41,7 @@ macro_rules! maybe_whole_expr {
                     let path = path.clone();
                     $p.bump();
                     return Ok($p.mk_expr(
-                        $p.token.span,
+                        $p.prev_token.span,
                         ExprKind::Path(None, path),
                         AttrVec::new(),
                     ));
@@ -48,7 +50,7 @@ macro_rules! maybe_whole_expr {
                     let block = block.clone();
                     $p.bump();
                     return Ok($p.mk_expr(
-                        $p.token.span,
+                        $p.prev_token.span,
                         ExprKind::Block(block, None),
                         AttrVec::new(),
                     ));
@@ -358,7 +360,7 @@ impl<'a> Parser<'a> {
             &format!("expected expression, found `{}`", pprust::token_to_string(&self.token),),
         );
         err.span_label(self.token.span, "expected expression");
-        self.sess.expr_parentheses_needed(&mut err, lhs.span, Some(pprust::expr_to_string(&lhs)));
+        self.sess.expr_parentheses_needed(&mut err, lhs.span);
         err.emit();
     }
 
@@ -696,20 +698,18 @@ impl<'a> Parser<'a> {
                         let expr =
                             mk_expr(self, lhs, self.mk_ty(path.span, TyKind::Path(None, path)));
 
-                        let expr_str = self
-                            .span_to_snippet(expr.span)
-                            .unwrap_or_else(|_| pprust::expr_to_string(&expr));
-
                         self.struct_span_err(self.token.span, &msg)
                             .span_label(
                                 self.look_ahead(1, |t| t.span).to(span_after_type),
                                 "interpreted as generic arguments",
                             )
                             .span_label(self.token.span, format!("not interpreted as {}", op_noun))
-                            .span_suggestion(
-                                expr.span,
+                            .multipart_suggestion(
                                 &format!("try {} the cast value", op_verb),
-                                format!("({})", expr_str),
+                                vec![
+                                    (expr.span.shrink_to_lo(), "(".to_string()),
+                                    (expr.span.shrink_to_hi(), ")".to_string()),
+                                ],
                                 Applicability::MachineApplicable,
                             )
                             .emit();
@@ -1092,7 +1092,7 @@ impl<'a> Parser<'a> {
         // added to the return value after the fact.
         //
         // Therefore, prevent sub-parser from parsing
-        // attributes by giving them a empty "already-parsed" list.
+        // attributes by giving them an empty "already-parsed" list.
         let attrs = AttrVec::new();
 
         // Note: when adding new syntax here, don't forget to adjust `TokenKind::can_begin_expr()`.
@@ -1377,14 +1377,59 @@ impl<'a> Parser<'a> {
         self.maybe_recover_from_bad_qpath(expr, true)
     }
 
-    /// Parse `"('label ":")? break expr?`.
+    /// Parse `"break" (('label (:? expr)?) | expr?)` with `"break"` token already eaten.
+    /// If the label is followed immediately by a `:` token, the label and `:` are
+    /// parsed as part of the expression (i.e. a labeled loop). The language team has
+    /// decided in #87026 to require parentheses as a visual aid to avoid confusion if
+    /// the break expression of an unlabeled break is a labeled loop (as in
+    /// `break 'lbl: loop {}`); a labeled break with an unlabeled loop as its value
+    /// expression only gets a warning for compatibility reasons; and a labeled break
+    /// with a labeled loop does not even get a warning because there is no ambiguity.
     fn parse_break_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.prev_token.span;
-        let label = self.eat_label();
-        let kind = if self.token != token::OpenDelim(token::Brace)
+        let mut label = self.eat_label();
+        let kind = if label.is_some() && self.token == token::Colon {
+            // The value expression can be a labeled loop, see issue #86948, e.g.:
+            // `loop { break 'label: loop { break 'label 42; }; }`
+            let lexpr = self.parse_labeled_expr(label.take().unwrap(), AttrVec::new(), true)?;
+            self.struct_span_err(
+                lexpr.span,
+                "parentheses are required around this expression to avoid confusion with a labeled break expression",
+            )
+            .multipart_suggestion(
+                "wrap the expression in parentheses",
+                vec![
+                    (lexpr.span.shrink_to_lo(), "(".to_string()),
+                    (lexpr.span.shrink_to_hi(), ")".to_string()),
+                ],
+                Applicability::MachineApplicable,
+            )
+            .emit();
+            Some(lexpr)
+        } else if self.token != token::OpenDelim(token::Brace)
             || !self.restrictions.contains(Restrictions::NO_STRUCT_LITERAL)
         {
-            self.parse_expr_opt()?
+            let expr = self.parse_expr_opt()?;
+            if let Some(ref expr) = expr {
+                if label.is_some()
+                    && matches!(
+                        expr.kind,
+                        ExprKind::While(_, _, None)
+                            | ExprKind::ForLoop(_, _, _, None)
+                            | ExprKind::Loop(_, None)
+                            | ExprKind::Block(_, None)
+                    )
+                {
+                    self.sess.buffer_lint_with_diagnostic(
+                        BREAK_WITH_LABEL_AND_LOOP,
+                        lo.to(expr.span),
+                        ast::CRATE_NODE_ID,
+                        "this labeled break expression is easy to confuse with an unlabeled break with a labeled value expression",
+                        BuiltinLintDiagnostics::BreakWithLabelAndLoop(expr.span),
+                    );
+                }
+            }
+            expr
         } else {
             None
         };
@@ -1483,7 +1528,7 @@ impl<'a> Parser<'a> {
             .span_suggestion(
                 token.span,
                 "must have an integer part",
-                pprust::token_to_string(token),
+                pprust::token_to_string(token).into(),
                 Applicability::MachineApplicable,
             )
             .emit();
@@ -1822,7 +1867,7 @@ impl<'a> Parser<'a> {
         })?;
         let span = lo.to(expr.span);
         self.sess.gated_spans.gate(sym::let_chains, span);
-        Ok(self.mk_expr(span, ExprKind::Let(pat, expr), attrs))
+        Ok(self.mk_expr(span, ExprKind::Let(pat, expr, span), attrs))
     }
 
     /// Parses an `else { ... }` expression (`else` token already eaten).

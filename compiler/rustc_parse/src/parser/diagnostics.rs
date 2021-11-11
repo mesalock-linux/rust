@@ -242,6 +242,63 @@ impl<'a> Parser<'a> {
         expected.sort_by_cached_key(|x| x.to_string());
         expected.dedup();
 
+        let sm = self.sess.source_map();
+        let msg = format!("expected `;`, found {}", super::token_descr(&self.token));
+        let appl = Applicability::MachineApplicable;
+        if expected.contains(&TokenType::Token(token::Semi)) {
+            if self.token.span == DUMMY_SP || self.prev_token.span == DUMMY_SP {
+                // Likely inside a macro, can't provide meaningful suggestions.
+            } else if !sm.is_multiline(self.prev_token.span.until(self.token.span)) {
+                // The current token is in the same line as the prior token, not recoverable.
+            } else if [token::Comma, token::Colon].contains(&self.token.kind)
+                && self.prev_token.kind == token::CloseDelim(token::Paren)
+            {
+                // Likely typo: The current token is on a new line and is expected to be
+                // `.`, `;`, `?`, or an operator after a close delimiter token.
+                //
+                // let a = std::process::Command::new("echo")
+                //         .arg("1")
+                //         ,arg("2")
+                //         ^
+                // https://github.com/rust-lang/rust/issues/72253
+            } else if self.look_ahead(1, |t| {
+                t == &token::CloseDelim(token::Brace)
+                    || t.can_begin_expr() && t.kind != token::Colon
+            }) && [token::Comma, token::Colon].contains(&self.token.kind)
+            {
+                // Likely typo: `,` → `;` or `:` → `;`. This is triggered if the current token is
+                // either `,` or `:`, and the next token could either start a new statement or is a
+                // block close. For example:
+                //
+                //   let x = 32:
+                //   let y = 42;
+                self.bump();
+                let sp = self.prev_token.span;
+                self.struct_span_err(sp, &msg)
+                    .span_suggestion_short(sp, "change this to `;`", ";".to_string(), appl)
+                    .emit();
+                return Ok(false);
+            } else if self.look_ahead(0, |t| {
+                t == &token::CloseDelim(token::Brace)
+                    || (
+                        t.can_begin_expr() && t != &token::Semi && t != &token::Pound
+                        // Avoid triggering with too many trailing `#` in raw string.
+                    )
+            }) {
+                // Missing semicolon typo. This is triggered if the next token could either start a
+                // new statement or is a block close. For example:
+                //
+                //   let x = 32
+                //   let y = 42;
+                let sp = self.prev_token.span.shrink_to_hi();
+                self.struct_span_err(sp, &msg)
+                    .span_label(self.token.span, "unexpected token")
+                    .span_suggestion_short(sp, "add `;` here", ";".to_string(), appl)
+                    .emit();
+                return Ok(false);
+            }
+        }
+
         let expect = tokens_to_string(&expected[..]);
         let actual = super::token_descr(&self.token);
         let (msg_exp, (label_sp, label_exp)) = if expected.len() > 1 {
@@ -303,7 +360,6 @@ impl<'a> Parser<'a> {
             return Err(err);
         }
 
-        let sm = self.sess.source_map();
         if self.prev_token.span == DUMMY_SP {
             // Account for macro context where the previous span might not be
             // available to avoid incorrect output (#54841).
@@ -390,11 +446,13 @@ impl<'a> Parser<'a> {
                         )
                         .emit();
                     *self = snapshot;
-                    Ok(self.mk_block(
+                    let mut tail = self.mk_block(
                         vec![self.mk_stmt_err(expr.span)],
                         s,
                         lo.to(self.prev_token.span),
-                    ))
+                    );
+                    tail.could_be_bare_literal = true;
+                    Ok(tail)
                 }
                 (Err(mut err), Ok(tail)) => {
                     // We have a block tail that contains a somehow valid type ascription expr.
@@ -407,7 +465,10 @@ impl<'a> Parser<'a> {
                     self.consume_block(token::Brace, ConsumeClosingDelim::Yes);
                     Err(err)
                 }
-                (Ok(_), Ok(tail)) => Ok(tail),
+                (Ok(_), Ok(mut tail)) => {
+                    tail.could_be_bare_literal = true;
+                    Ok(tail)
+                }
             });
         }
         None
@@ -1144,62 +1205,6 @@ impl<'a> Parser<'a> {
         if self.eat(&token::Semi) {
             return Ok(());
         }
-        let sm = self.sess.source_map();
-        let msg = format!("expected `;`, found {}", super::token_descr(&self.token));
-        let appl = Applicability::MachineApplicable;
-        if self.token.span == DUMMY_SP || self.prev_token.span == DUMMY_SP {
-            // Likely inside a macro, can't provide meaningful suggestions.
-            return self.expect(&token::Semi).map(drop);
-        } else if !sm.is_multiline(self.prev_token.span.until(self.token.span)) {
-            // The current token is in the same line as the prior token, not recoverable.
-        } else if [token::Comma, token::Colon].contains(&self.token.kind)
-            && self.prev_token.kind == token::CloseDelim(token::Paren)
-        {
-            // Likely typo: The current token is on a new line and is expected to be
-            // `.`, `;`, `?`, or an operator after a close delimiter token.
-            //
-            // let a = std::process::Command::new("echo")
-            //         .arg("1")
-            //         ,arg("2")
-            //         ^
-            // https://github.com/rust-lang/rust/issues/72253
-            self.expect(&token::Semi)?;
-            return Ok(());
-        } else if self.look_ahead(1, |t| {
-            t == &token::CloseDelim(token::Brace) || t.can_begin_expr() && t.kind != token::Colon
-        }) && [token::Comma, token::Colon].contains(&self.token.kind)
-        {
-            // Likely typo: `,` → `;` or `:` → `;`. This is triggered if the current token is
-            // either `,` or `:`, and the next token could either start a new statement or is a
-            // block close. For example:
-            //
-            //   let x = 32:
-            //   let y = 42;
-            self.bump();
-            let sp = self.prev_token.span;
-            self.struct_span_err(sp, &msg)
-                .span_suggestion_short(sp, "change this to `;`", ";".to_string(), appl)
-                .emit();
-            return Ok(());
-        } else if self.look_ahead(0, |t| {
-            t == &token::CloseDelim(token::Brace)
-                || (
-                    t.can_begin_expr() && t != &token::Semi && t != &token::Pound
-                    // Avoid triggering with too many trailing `#` in raw string.
-                )
-        }) {
-            // Missing semicolon typo. This is triggered if the next token could either start a
-            // new statement or is a block close. For example:
-            //
-            //   let x = 32
-            //   let y = 42;
-            let sp = self.prev_token.span.shrink_to_hi();
-            self.struct_span_err(sp, &msg)
-                .span_label(self.token.span, "unexpected token")
-                .span_suggestion_short(sp, "add `;` here", ";".to_string(), appl)
-                .emit();
-            return Ok(());
-        }
         self.expect(&token::Semi).map(drop) // Error unconditionally
     }
 
@@ -1432,12 +1437,22 @@ impl<'a> Parser<'a> {
                 // the most sense, which is immediately after the last token:
                 //
                 //  {foo(bar {}}
-                //      -      ^
+                //      ^      ^
                 //      |      |
                 //      |      help: `)` may belong here
                 //      |
                 //      unclosed delimiter
                 if let Some(sp) = unmatched.unclosed_span {
+                    let mut primary_span: Vec<Span> =
+                        err.span.primary_spans().iter().cloned().collect();
+                    primary_span.push(sp);
+                    let mut primary_span: MultiSpan = primary_span.into();
+                    for span_label in err.span.span_labels() {
+                        if let Some(label) = span_label.label {
+                            primary_span.push_span_label(span_label.span, label);
+                        }
+                    }
+                    err.set_span(primary_span);
                     err.span_label(sp, "unclosed delimiter");
                 }
                 // Backticks should be removed to apply suggestions.
@@ -1770,7 +1785,7 @@ impl<'a> Parser<'a> {
         let mut err = self.struct_span_err(span, &msg);
         let sp = self.sess.source_map().start_point(self.token.span);
         if let Some(sp) = self.sess.ambiguous_block_expr_parse.borrow().get(&sp) {
-            self.sess.expr_parentheses_needed(&mut err, *sp, None);
+            self.sess.expr_parentheses_needed(&mut err, *sp);
         }
         err.span_label(span, "expected expression");
         err

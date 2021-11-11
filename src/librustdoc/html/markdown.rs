@@ -23,25 +23,26 @@ use rustc_hir::HirId;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::edition::Edition;
 use rustc_span::Span;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::default::Default;
 use std::fmt::Write;
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::str;
 
 use crate::clean::RenderedLink;
 use crate::doctest;
 use crate::html::escape::Escape;
+use crate::html::format::Buffer;
 use crate::html::highlight;
+use crate::html::length_limit::HtmlWithLimit;
 use crate::html::toc::TocBuilder;
 
 use pulldown_cmark::{
     html, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag,
 };
-
-use super::format::Buffer;
 
 #[cfg(test)]
 mod tests;
@@ -235,9 +236,9 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
                     return Some(Event::Html(
                         format!(
                             "<div class=\"example-wrap\">\
-                                 <pre{}>{}</pre>\
+                                 <pre class=\"language-{}\"><code>{}</code></pre>\
                              </div>",
-                            format!(" class=\"language-{}\"", lang),
+                            lang,
                             Escape(&text),
                         )
                         .into(),
@@ -330,6 +331,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
             playground_button.as_deref(),
             tooltip,
             edition,
+            None,
             None,
         );
         Some(Event::Html(s.into_inner().into()))
@@ -1081,15 +1083,6 @@ fn markdown_summary_with_limit(
         return (String::new(), false);
     }
 
-    let mut s = String::with_capacity(md.len() * 3 / 2);
-    let mut text_length = 0;
-    let mut stopped_early = false;
-
-    fn push(s: &mut String, text_length: &mut usize, text: &str) {
-        s.push_str(text);
-        *text_length += text.len();
-    }
-
     let mut replacer = |broken_link: BrokenLink<'_>| {
         if let Some(link) =
             link_names.iter().find(|link| &*link.original_text == broken_link.reference)
@@ -1101,56 +1094,48 @@ fn markdown_summary_with_limit(
     };
 
     let p = Parser::new_with_broken_link_callback(md, opts(), Some(&mut replacer));
-    let p = LinkReplacer::new(p, link_names);
+    let mut p = LinkReplacer::new(p, link_names);
 
-    'outer: for event in p {
+    let mut buf = HtmlWithLimit::new(length_limit);
+    let mut stopped_early = false;
+    p.try_for_each(|event| {
         match &event {
             Event::Text(text) => {
-                for word in text.split_inclusive(char::is_whitespace) {
-                    if text_length + word.len() >= length_limit {
-                        stopped_early = true;
-                        break 'outer;
-                    }
-
-                    push(&mut s, &mut text_length, word);
+                let r =
+                    text.split_inclusive(char::is_whitespace).try_for_each(|word| buf.push(word));
+                if r.is_break() {
+                    stopped_early = true;
                 }
+                return r;
             }
             Event::Code(code) => {
-                if text_length + code.len() >= length_limit {
+                buf.open_tag("code");
+                let r = buf.push(code);
+                if r.is_break() {
                     stopped_early = true;
-                    break;
+                } else {
+                    buf.close_tag();
                 }
-
-                s.push_str("<code>");
-                push(&mut s, &mut text_length, code);
-                s.push_str("</code>");
+                return r;
             }
             Event::Start(tag) => match tag {
-                Tag::Emphasis => s.push_str("<em>"),
-                Tag::Strong => s.push_str("<strong>"),
-                Tag::CodeBlock(..) => break,
+                Tag::Emphasis => buf.open_tag("em"),
+                Tag::Strong => buf.open_tag("strong"),
+                Tag::CodeBlock(..) => return ControlFlow::BREAK,
                 _ => {}
             },
             Event::End(tag) => match tag {
-                Tag::Emphasis => s.push_str("</em>"),
-                Tag::Strong => s.push_str("</strong>"),
-                Tag::Paragraph => break,
-                Tag::Heading(..) => break,
+                Tag::Emphasis | Tag::Strong => buf.close_tag(),
+                Tag::Paragraph | Tag::Heading(..) => return ControlFlow::BREAK,
                 _ => {}
             },
-            Event::HardBreak | Event::SoftBreak => {
-                if text_length + 1 >= length_limit {
-                    stopped_early = true;
-                    break;
-                }
-
-                push(&mut s, &mut text_length, " ");
-            }
+            Event::HardBreak | Event::SoftBreak => buf.push(" ")?,
             _ => {}
-        }
-    }
+        };
+        ControlFlow::CONTINUE
+    });
 
-    (s, stopped_early)
+    (buf.finish(), stopped_early)
 }
 
 /// Renders a shortened first paragraph of the given Markdown as a subset of Markdown,
@@ -1281,8 +1266,7 @@ crate struct RustCodeBlock {
     /// The range in the markdown that the code within the code block occupies.
     crate code: Range<usize>,
     crate is_fenced: bool,
-    crate syntax: Option<String>,
-    crate is_ignore: bool,
+    crate lang_string: LangString,
 }
 
 /// Returns a range of bytes for each code block in the markdown that is tagged as `rust` or
@@ -1298,7 +1282,7 @@ crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeB
 
     while let Some((event, offset)) = p.next() {
         if let Event::Start(Tag::CodeBlock(syntax)) = event {
-            let (syntax, code_start, code_end, range, is_fenced, is_ignore) = match syntax {
+            let (lang_string, code_start, code_end, range, is_fenced) = match syntax {
                 CodeBlockKind::Fenced(syntax) => {
                     let syntax = syntax.as_ref();
                     let lang_string = if syntax.is_empty() {
@@ -1309,8 +1293,6 @@ crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeB
                     if !lang_string.rust {
                         continue;
                     }
-                    let is_ignore = lang_string.ignore != Ignore::None;
-                    let syntax = if syntax.is_empty() { None } else { Some(syntax.to_owned()) };
                     let (code_start, mut code_end) = match p.next() {
                         Some((Event::Text(_), offset)) => (offset.start, offset.end),
                         Some((_, sub_offset)) => {
@@ -1319,8 +1301,7 @@ crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeB
                                 is_fenced: true,
                                 range: offset,
                                 code,
-                                syntax,
-                                is_ignore,
+                                lang_string,
                             });
                             continue;
                         }
@@ -1330,8 +1311,7 @@ crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeB
                                 is_fenced: true,
                                 range: offset,
                                 code,
-                                syntax,
-                                is_ignore,
+                                lang_string,
                             });
                             continue;
                         }
@@ -1339,22 +1319,21 @@ crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeB
                     while let Some((Event::Text(_), offset)) = p.next() {
                         code_end = offset.end;
                     }
-                    (syntax, code_start, code_end, offset, true, is_ignore)
+                    (lang_string, code_start, code_end, offset, true)
                 }
                 CodeBlockKind::Indented => {
                     // The ending of the offset goes too far sometime so we reduce it by one in
                     // these cases.
                     if offset.end > offset.start && md.get(offset.end..=offset.end) == Some(&"\n") {
                         (
-                            None,
+                            LangString::default(),
                             offset.start,
                             offset.end,
                             Range { start: offset.start, end: offset.end - 1 },
                             false,
-                            false,
                         )
                     } else {
-                        (None, offset.start, offset.end, offset, false, false)
+                        (LangString::default(), offset.start, offset.end, offset, false)
                     }
                 }
             };
@@ -1363,8 +1342,7 @@ crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeB
                 is_fenced,
                 range,
                 code: Range { start: code_start, end: code_end },
-                syntax,
-                is_ignore,
+                lang_string,
             });
         }
     }

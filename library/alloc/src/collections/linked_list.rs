@@ -31,11 +31,19 @@ mod tests;
 /// The `LinkedList` allows pushing and popping elements at either end
 /// in constant time.
 ///
+/// A `LinkedList` with a known list of items can be initialized from an array:
+/// ```
+/// use std::collections::LinkedList;
+///
+/// let list = LinkedList::from([1, 2, 3]);
+/// ```
+///
 /// NOTE: It is almost always better to use `Vec` or `VecDeque` because
 /// array-based containers are generally faster,
 /// more memory efficient, and make better use of CPU cache.
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "LinkedList")]
+#[rustc_insignificant_dtor]
 pub struct LinkedList<T> {
     head: Option<NonNull<Node<T>>>,
     tail: Option<NonNull<Node<T>>>,
@@ -293,7 +301,10 @@ impl<T> LinkedList<T> {
         let tail = self.tail.take();
         let len = mem::replace(&mut self.len, 0);
         if let Some(head) = head {
-            let tail = tail.unwrap_or_else(|| unsafe { core::hint::unreachable_unchecked() });
+            // SAFETY: In a LinkedList, either both the head and tail are None because
+            // the list is empty, or both head and tail are Some because the list is populated.
+            // Since we have verified the head is Some, we are sure the tail is Some too.
+            let tail = unsafe { tail.unwrap_unchecked() };
             Some((head, tail, len))
         } else {
             None
@@ -1898,6 +1909,20 @@ impl<T: Hash> Hash for LinkedList<T> {
         for elt in self {
             elt.hash(state);
         }
+    }
+}
+
+#[stable(feature = "std_collections_from_array", since = "1.56.0")]
+impl<T, const N: usize> From<[T; N]> for LinkedList<T> {
+    /// ```
+    /// use std::collections::LinkedList;
+    ///
+    /// let list1 = LinkedList::from([1, 2, 3, 4]);
+    /// let list2: LinkedList<_> = [1, 2, 3, 4].into();
+    /// assert_eq!(list1, list2);
+    /// ```
+    fn from(arr: [T; N]) -> Self {
+        core::array::IntoIter::new(arr).collect()
     }
 }
 

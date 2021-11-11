@@ -102,6 +102,7 @@ fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> P<ast::Expr> {
         rules: ast::BlockCheckMode::Unsafe(ast::CompilerGenerated),
         span,
         tokens: None,
+        could_be_bare_literal: false,
     }))
 }
 
@@ -179,7 +180,7 @@ fn inject_impl_of_structural_trait(
         span,
         Ident::invalid(),
         attrs,
-        ItemKind::Impl(box ImplKind {
+        ItemKind::Impl(Box::new(ImplKind {
             unsafety: ast::Unsafe::No,
             polarity: ast::ImplPolarity::Positive,
             defaultness: ast::Defaultness::Final,
@@ -188,7 +189,7 @@ fn inject_impl_of_structural_trait(
             of_trait: Some(trait_ref),
             self_ty: self_type,
             items: Vec::new(),
-        }),
+        })),
     );
 
     push(Annotatable::Item(newitem));

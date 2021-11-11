@@ -280,7 +280,8 @@ macro_rules! array_impl_default {
     };
     {$n:expr,} => {
         #[stable(since = "1.4.0", feature = "array_default")]
-        impl<T> Default for [T; $n] {
+        #[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+        impl<T> const Default for [T; $n] {
             fn default() -> [T; $n] { [] }
         }
     };
@@ -292,6 +293,28 @@ array_impl_default! {32, T T T T T T T T T T T T T T T T T T T T T T T T T T T T
 impl<T, const N: usize> [T; N] {
     /// Returns an array of the same size as `self`, with function `f` applied to each element
     /// in order.
+    ///
+    /// If you don't necessarily need a new fixed-size array, consider using
+    /// [`Iterator::map`] instead.
+    ///
+    ///
+    /// # Note on performance and stack usage
+    ///
+    /// Unfortunately, usages of this method are currently not always optimized
+    /// as well as they could be. This mainly concerns large arrays, as mapping
+    /// over small arrays seem to be optimized just fine. Also note that in
+    /// debug mode (i.e. without any optimizations), this method can use a lot
+    /// of stack space (a few times the size of the array or more).
+    ///
+    /// Therefore, in performance-critical code, try to avoid using this method
+    /// on large arrays or check the emitted code. Also try to avoid chained
+    /// maps (e.g. `arr.map(...).map(...)`).
+    ///
+    /// In many cases, you can instead use [`Iterator::map`] by calling `.iter()`
+    /// or `.into_iter()` on your array. `[T; N]::map` is only necessary if you
+    /// really need a new array of the same size as the result. Rust's lazy
+    /// iterators tend to get optimized very well.
+    ///
     ///
     /// # Examples
     ///
@@ -436,11 +459,8 @@ where
     debug_assert!(N <= iter.size_hint().1.unwrap_or(usize::MAX));
     debug_assert!(N <= iter.size_hint().0);
 
-    match collect_into_array(iter) {
-        Some(array) => array,
-        // SAFETY: covered by the function contract.
-        None => unsafe { crate::hint::unreachable_unchecked() },
-    }
+    // SAFETY: covered by the function contract.
+    unsafe { collect_into_array(iter).unwrap_unchecked() }
 }
 
 /// Pulls `N` items from `iter` and returns them as an array. If the iterator

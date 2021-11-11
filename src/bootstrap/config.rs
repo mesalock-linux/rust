@@ -90,6 +90,7 @@ pub struct Config {
     // llvm codegen options
     pub llvm_skip_rebuild: bool,
     pub llvm_assertions: bool,
+    pub llvm_plugins: bool,
     pub llvm_optimize: bool,
     pub llvm_thin_lto: bool,
     pub llvm_release_debuginfo: bool,
@@ -104,6 +105,7 @@ pub struct Config {
     pub llvm_use_linker: Option<String>,
     pub llvm_allow_old_toolchain: bool,
     pub llvm_polly: bool,
+    pub llvm_clang: bool,
     pub llvm_from_ci: bool,
 
     pub use_lld: bool,
@@ -121,6 +123,8 @@ pub struct Config {
     pub rust_codegen_units_std: Option<u32>,
     pub rust_debug_assertions: bool,
     pub rust_debug_assertions_std: bool,
+    pub rust_overflow_checks: bool,
+    pub rust_overflow_checks_std: bool,
     pub rust_debug_logging: bool,
     pub rust_debuginfo_level_rustc: u32,
     pub rust_debuginfo_level_std: u32,
@@ -139,6 +143,8 @@ pub struct Config {
     pub rust_new_symbol_mangling: bool,
     pub rust_profile_use: Option<String>,
     pub rust_profile_generate: Option<String>,
+    pub llvm_profile_use: Option<String>,
+    pub llvm_profile_generate: bool,
 
     pub build: TargetSelection,
     pub hosts: Vec<TargetSelection>,
@@ -415,6 +421,7 @@ struct Llvm {
     thin_lto: Option<bool>,
     release_debuginfo: Option<bool>,
     assertions: Option<bool>,
+    plugins: Option<bool>,
     ccache: Option<StringOrBool>,
     version_check: Option<bool>,
     static_libstdcpp: Option<bool>,
@@ -432,6 +439,7 @@ struct Llvm {
     use_linker: Option<String>,
     allow_old_toolchain: Option<bool>,
     polly: Option<bool>,
+    clang: Option<bool>,
     download_ci_llvm: Option<StringOrBool>,
 }
 
@@ -469,6 +477,8 @@ struct Rust {
     codegen_units_std: Option<u32>,
     debug_assertions: Option<bool>,
     debug_assertions_std: Option<bool>,
+    overflow_checks: Option<bool>,
+    overflow_checks_std: Option<bool>,
     debug_logging: Option<bool>,
     debuginfo_level: Option<u32>,
     debuginfo_level_rustc: Option<u32>,
@@ -597,6 +607,8 @@ impl Config {
         if let Some(value) = flags.deny_warnings {
             config.deny_warnings = value;
         }
+        config.llvm_profile_use = flags.llvm_profile_use;
+        config.llvm_profile_generate = flags.llvm_profile_generate;
 
         if config.dry_run {
             let dir = config.out.join("tmp-dry-run");
@@ -702,9 +714,12 @@ impl Config {
         // Store off these values as options because if they're not provided
         // we'll infer default values for them later
         let mut llvm_assertions = None;
+        let mut llvm_plugins = None;
         let mut debug = None;
         let mut debug_assertions = None;
         let mut debug_assertions_std = None;
+        let mut overflow_checks = None;
+        let mut overflow_checks_std = None;
         let mut debug_logging = None;
         let mut debuginfo_level = None;
         let mut debuginfo_level_rustc = None;
@@ -724,6 +739,7 @@ impl Config {
             }
             set(&mut config.ninja_in_file, llvm.ninja);
             llvm_assertions = llvm.assertions;
+            llvm_plugins = llvm.plugins;
             llvm_skip_rebuild = llvm_skip_rebuild.or(llvm.skip_rebuild);
             set(&mut config.llvm_optimize, llvm.optimize);
             set(&mut config.llvm_thin_lto, llvm.thin_lto);
@@ -744,6 +760,7 @@ impl Config {
             config.llvm_use_linker = llvm.use_linker.clone();
             config.llvm_allow_old_toolchain = llvm.allow_old_toolchain.unwrap_or(false);
             config.llvm_polly = llvm.polly.unwrap_or(false);
+            config.llvm_clang = llvm.clang.unwrap_or(false);
             config.llvm_from_ci = match llvm.download_ci_llvm {
                 Some(StringOrBool::String(s)) => {
                     assert!(s == "if-available", "unknown option `{}` for download-ci-llvm", s);
@@ -790,6 +807,8 @@ impl Config {
                 check_ci_llvm!(llvm.use_linker);
                 check_ci_llvm!(llvm.allow_old_toolchain);
                 check_ci_llvm!(llvm.polly);
+                check_ci_llvm!(llvm.clang);
+                check_ci_llvm!(llvm.plugins);
 
                 // CI-built LLVM can be either dynamic or static.
                 let ci_llvm = config.out.join(&*config.build.triple).join("ci-llvm");
@@ -822,6 +841,8 @@ impl Config {
             debug = rust.debug;
             debug_assertions = rust.debug_assertions;
             debug_assertions_std = rust.debug_assertions_std;
+            overflow_checks = rust.overflow_checks;
+            overflow_checks_std = rust.overflow_checks_std;
             debug_logging = rust.debug_logging;
             debuginfo_level = rust.debuginfo_level;
             debuginfo_level_rustc = rust.debuginfo_level_rustc;
@@ -952,12 +973,15 @@ impl Config {
 
         config.llvm_skip_rebuild = llvm_skip_rebuild.unwrap_or(false);
         config.llvm_assertions = llvm_assertions.unwrap_or(false);
+        config.llvm_plugins = llvm_plugins.unwrap_or(false);
         config.rust_optimize = optimize.unwrap_or(true);
 
         let default = debug == Some(true);
         config.rust_debug_assertions = debug_assertions.unwrap_or(default);
         config.rust_debug_assertions_std =
             debug_assertions_std.unwrap_or(config.rust_debug_assertions);
+        config.rust_overflow_checks = overflow_checks.unwrap_or(default);
+        config.rust_overflow_checks_std = overflow_checks_std.unwrap_or(default);
 
         config.rust_debug_logging = debug_logging.unwrap_or(config.rust_debug_assertions);
 

@@ -80,6 +80,8 @@ mod imp {
     pub mod dragonfly;
     #[cfg(target_os = "emscripten")]
     pub mod emscripten;
+    #[cfg(target_os = "espidf")]
+    pub mod espidf;
     #[cfg(target_os = "freebsd")]
     pub mod freebsd;
     #[cfg(target_os = "fuchsia")]
@@ -119,3 +121,6 @@ mod imp {
 #[cfg(not(doc))]
 #[stable(feature = "os", since = "1.0.0")]
 pub use imp::*;
+
+#[cfg(any(unix, target_os = "wasi", doc))]
+mod fd;

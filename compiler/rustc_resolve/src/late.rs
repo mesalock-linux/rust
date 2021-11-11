@@ -383,6 +383,11 @@ struct DiagnosticMetadata<'ast> {
     /// Only used for better errors on `fn(): fn()`.
     current_type_ascription: Vec<Span>,
 
+    /// Only used for better errors on `let x = { foo: bar };`.
+    /// In the case of a parse error with `let x = { foo: bar, };`, this isn't needed, it's only
+    /// needed for cases where this parses as a correct type ascription.
+    current_block_could_be_bare_struct_literal: Option<Span>,
+
     /// Only used for better errors on `let <pat>: <expr, not type>;`.
     current_let_binding: Option<(Span, Option<Span>, Option<Span>)>,
 
@@ -454,7 +459,7 @@ impl<'a: 'ast, 'ast> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast> {
             _ => Some((
                 local.pat.span,
                 local.ty.as_ref().map(|ty| ty.span),
-                local.init.as_ref().map(|init| init.span),
+                local.kind.init().map(|init| init.span),
             )),
         };
         let original = replace(&mut self.diagnostic_metadata.current_let_binding, local_spans);
@@ -952,6 +957,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         match item.kind {
             ItemKind::TyAlias(box TyAliasKind(_, ref generics, _, _))
             | ItemKind::Fn(box FnKind(_, _, ref generics, _)) => {
+                self.compute_num_lifetime_params(item.id, generics);
                 self.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes), |this| {
                     visit::walk_item(this, item)
                 });
@@ -960,6 +966,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             ItemKind::Enum(_, ref generics)
             | ItemKind::Struct(_, ref generics)
             | ItemKind::Union(_, ref generics) => {
+                self.compute_num_lifetime_params(item.id, generics);
                 self.resolve_adt(item, generics);
             }
 
@@ -970,10 +977,12 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 items: ref impl_items,
                 ..
             }) => {
+                self.compute_num_lifetime_params(item.id, generics);
                 self.resolve_implementation(generics, of_trait, &self_ty, item.id, impl_items);
             }
 
             ItemKind::Trait(box TraitKind(.., ref generics, ref bounds, ref trait_items)) => {
+                self.compute_num_lifetime_params(item.id, generics);
                 // Create a new rib for the trait-wide type parameters.
                 self.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes), |this| {
                     let local_def_id = this.r.local_def_id(item.id).to_def_id();
@@ -1025,6 +1034,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             }
 
             ItemKind::TraitAlias(ref generics, ref bounds) => {
+                self.compute_num_lifetime_params(item.id, generics);
                 // Create a new rib for the trait-wide type parameters.
                 self.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes), |this| {
                     let local_def_id = this.r.local_def_id(item.id).to_def_id();
@@ -1276,7 +1286,14 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             this.with_self_rib(Res::SelfTy(None, None), |this| {
                 // Resolve the trait reference, if necessary.
                 this.with_optional_trait_ref(opt_trait_reference.as_ref(), |this, trait_id| {
-                    let item_def_id = this.r.local_def_id(item_id).to_def_id();
+                    let item_def_id = this.r.local_def_id(item_id);
+
+                    // Register the trait definitions from here.
+                    if let Some(trait_id) = trait_id {
+                        this.r.trait_impls.entry(trait_id).or_default().push(item_def_id);
+                    }
+
+                    let item_def_id = item_def_id.to_def_id();
                     this.with_self_rib(Res::SelfTy(trait_id, Some((item_def_id, false))), |this| {
                         if let Some(trait_ref) = opt_trait_reference.as_ref() {
                             // Resolve type arguments in the trait path.
@@ -1426,7 +1443,14 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         walk_list!(self, visit_ty, &local.ty);
 
         // Resolve the initializer.
-        walk_list!(self, visit_expr, &local.init);
+        if let Some((init, els)) = local.kind.init_else_opt() {
+            self.visit_expr(init);
+
+            // Resolve the `else` block
+            if let Some(els) = els {
+                self.visit_block(els);
+            }
+        }
 
         // Resolve the pattern.
         self.resolve_pattern_top(&local.pat, PatternSource::Let);
@@ -1738,7 +1762,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 // whether they can be shadowed by fresh bindings or not, so force an error.
                 // issues/33118#issuecomment-233962221 (see below) still applies here,
                 // but we have to ignore it for backward compatibility.
-                self.r.record_use(ident, ValueNS, binding, false);
+                self.r.record_use(ident, binding, false);
                 return None;
             }
             LexicalScopeBinding::Item(binding) => (binding.res(), Some(binding)),
@@ -1753,7 +1777,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             ) if is_syntactic_ambiguity => {
                 // Disambiguate in favor of a unit struct/variant or constant pattern.
                 if let Some(binding) = binding {
-                    self.r.record_use(ident, ValueNS, binding, false);
+                    self.r.record_use(ident, binding, false);
                 }
                 Some(res)
             }
@@ -1852,6 +1876,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 let instead = res.is_some();
                 let suggestion =
                     if res.is_none() { this.report_missing_type_error(path) } else { None };
+                // get_from_node_id
 
                 this.r.use_injections.push(UseError {
                     err,
@@ -2235,6 +2260,15 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             self.ribs[ValueNS].push(Rib::new(NormalRibKind));
         }
 
+        let prev = self.diagnostic_metadata.current_block_could_be_bare_struct_literal.take();
+        if let (true, [Stmt { kind: StmtKind::Expr(expr), .. }]) =
+            (block.could_be_bare_literal, &block.stmts[..])
+        {
+            if let ExprKind::Type(..) = expr.kind {
+                self.diagnostic_metadata.current_block_could_be_bare_struct_literal =
+                    Some(block.span);
+            }
+        }
         // Descend into the block.
         for stmt in &block.stmts {
             if let StmtKind::Item(ref item) = stmt.kind {
@@ -2248,6 +2282,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
 
             self.visit_stmt(stmt);
         }
+        self.diagnostic_metadata.current_block_could_be_bare_struct_literal = prev;
 
         // Move back up.
         self.parent_scope.module = orig_module;
@@ -2309,7 +2344,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 self.resolve_expr(e, Some(&expr));
             }
 
-            ExprKind::Let(ref pat, ref scrutinee) => {
+            ExprKind::Let(ref pat, ref scrutinee, _) => {
                 self.visit_expr(scrutinee);
                 self.resolve_pattern_top(pat, PatternSource::Let);
             }
@@ -2455,6 +2490,16 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             ident.span.ctxt(),
             Some((ident.name, ns)),
         )
+    }
+
+    fn compute_num_lifetime_params(&mut self, id: NodeId, generics: &Generics) {
+        let def_id = self.r.local_def_id(id);
+        let count = generics
+            .params
+            .iter()
+            .filter(|param| matches!(param.kind, ast::GenericParamKind::Lifetime { .. }))
+            .count();
+        self.r.item_generics_num_lifetimes.insert(def_id, count);
     }
 }
 

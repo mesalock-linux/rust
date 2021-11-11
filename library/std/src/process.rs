@@ -166,7 +166,7 @@ use crate::sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
 /// [`wait`]: Child::wait
 #[stable(feature = "process", since = "1.0.0")]
 pub struct Child {
-    handle: imp::Process,
+    pub(crate) handle: imp::Process,
 
     /// The handle for writing to the child's standard input (stdin), if it has
     /// been captured. To avoid partially moving
@@ -204,6 +204,10 @@ pub struct Child {
     #[stable(feature = "process", since = "1.0.0")]
     pub stderr: Option<ChildStderr>,
 }
+
+/// Allows extension traits within `std`.
+#[unstable(feature = "sealed", issue = "none")]
+impl crate::sealed::Sealed for Child {}
 
 impl AsInner<imp::Process> for Child {
     fn as_inner(&self) -> &imp::Process {
@@ -253,6 +257,12 @@ impl fmt::Debug for Child {
 pub struct ChildStdin {
     inner: AnonPipe,
 }
+
+// In addition to the `impl`s here, `ChildStdin` also has `impl`s for
+// `AsFd`/`From<OwnedFd>`/`Into<OwnedFd>` and
+// `AsRawFd`/`IntoRawFd`/`FromRawFd`, on Unix and WASI, and
+// `AsHandle`/`From<OwnedHandle>`/`Into<OwnedHandle>` and
+// `AsRawHandle`/`IntoRawHandle`/`FromRawHandle` on Windows.
 
 #[stable(feature = "process", since = "1.0.0")]
 impl Write for ChildStdin {
@@ -331,6 +341,12 @@ pub struct ChildStdout {
     inner: AnonPipe,
 }
 
+// In addition to the `impl`s here, `ChildStdout` also has `impl`s for
+// `AsFd`/`From<OwnedFd>`/`Into<OwnedFd>` and
+// `AsRawFd`/`IntoRawFd`/`FromRawFd`, on Unix and WASI, and
+// `AsHandle`/`From<OwnedHandle>`/`Into<OwnedHandle>` and
+// `AsRawHandle`/`IntoRawHandle`/`FromRawHandle` on Windows.
+
 #[stable(feature = "process", since = "1.0.0")]
 impl Read for ChildStdout {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -391,6 +407,12 @@ impl fmt::Debug for ChildStdout {
 pub struct ChildStderr {
     inner: AnonPipe,
 }
+
+// In addition to the `impl`s here, `ChildStderr` also has `impl`s for
+// `AsFd`/`From<OwnedFd>`/`Into<OwnedFd>` and
+// `AsRawFd`/`IntoRawFd`/`FromRawFd`, on Unix and WASI, and
+// `AsHandle`/`From<OwnedHandle>`/`Into<OwnedHandle>` and
+// `AsRawHandle`/`IntoRawHandle`/`FromRawHandle` on Windows.
 
 #[stable(feature = "process", since = "1.0.0")]
 impl Read for ChildStderr {
@@ -1453,7 +1475,7 @@ impl ExitStatus {
     ///
     /// In Unix terms the return value is the **exit status**: the value passed to `exit`, if the
     /// process finished by calling `exit`.  Note that on Unix the exit status is truncated to 8
-    /// bits, and that values that didn't come from a program's call to `exit` may be invented the
+    /// bits, and that values that didn't come from a program's call to `exit` may be invented by the
     /// runtime system (often, for example, 255, 254, 127 or 126).
     ///
     /// On Unix, this will return `None` if the process was terminated by a signal.

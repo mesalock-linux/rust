@@ -69,7 +69,7 @@ pub use iter::SplitAsciiWhitespace;
 pub use iter::SplitInclusive;
 
 #[unstable(feature = "str_internals", issue = "none")]
-pub use validations::next_code_point;
+pub use validations::{next_code_point, utf8_char_width};
 
 use iter::MatchIndicesInternal;
 use iter::SplitInternal;
@@ -123,7 +123,7 @@ impl str {
     /// Returns the length of `self`.
     ///
     /// This length is in bytes, not [`char`]s or graphemes. In other words,
-    /// it may not be what a human considers the length of the string.
+    /// it might not be what a human considers the length of the string.
     ///
     /// [`char`]: prim@char
     ///
@@ -231,7 +231,7 @@ impl str {
     #[rustc_const_stable(feature = "str_as_bytes", since = "1.39.0")]
     #[inline(always)]
     #[allow(unused_attributes)]
-    #[rustc_allow_const_fn_unstable(const_fn_transmute)]
+    #[cfg_attr(bootstrap, rustc_allow_const_fn_unstable(const_fn_transmute))]
     pub const fn as_bytes(&self) -> &[u8] {
         // SAFETY: const sound because we transmute two types with the same layout
         unsafe { mem::transmute(self) }
@@ -633,7 +633,7 @@ impl str {
     /// string slice by [`char`]. This method returns such an iterator.
     ///
     /// It's important to remember that [`char`] represents a Unicode Scalar
-    /// Value, and may not match your idea of what a 'character' is. Iteration
+    /// Value, and might not match your idea of what a 'character' is. Iteration
     /// over grapheme clusters may be what you actually want. This functionality
     /// is not provided by Rust's standard library, check crates.io instead.
     ///
@@ -660,7 +660,7 @@ impl str {
     /// assert_eq!(None, chars.next());
     /// ```
     ///
-    /// Remember, [`char`]s may not match your intuition about characters:
+    /// Remember, [`char`]s might not match your intuition about characters:
     ///
     /// [`char`]: prim@char
     ///
@@ -713,7 +713,7 @@ impl str {
     /// assert_eq!(None, char_indices.next());
     /// ```
     ///
-    /// Remember, [`char`]s may not match your intuition about characters:
+    /// Remember, [`char`]s might not match your intuition about characters:
     ///
     /// [`char`]: prim@char
     ///
@@ -2442,7 +2442,8 @@ impl AsRef<[u8]> for str {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Default for &str {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl const Default for &str {
     /// Creates an empty str
     #[inline]
     fn default() -> Self {

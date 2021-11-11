@@ -90,15 +90,8 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                         _ => ParenthesizedGenericArgs::Err,
                     };
 
-                    let num_lifetimes = type_def_id.map_or(0, |def_id| {
-                        if let Some(&n) = self.type_def_lifetime_params.get(&def_id) {
-                            return n;
-                        }
-                        assert!(!def_id.is_local());
-                        let n = self.resolver.item_generics_num_lifetimes(def_id, self.sess);
-                        self.type_def_lifetime_params.insert(def_id, n);
-                        n
-                    });
+                    let num_lifetimes = type_def_id
+                        .map_or(0, |def_id| self.resolver.item_generics_num_lifetimes(def_id));
                     self.lower_path_segment(
                         p.span,
                         segment,
@@ -110,9 +103,11 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     )
                 },
             )),
-            span: p.segments[..proj_start]
-                .last()
-                .map_or(path_span_lo, |segment| path_span_lo.to(segment.span())),
+            span: self.lower_span(
+                p.segments[..proj_start]
+                    .last()
+                    .map_or(path_span_lo, |segment| path_span_lo.to(segment.span())),
+            ),
         });
 
         // Simple case, either no projections, or only fully-qualified.
@@ -198,7 +193,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     explicit_owner,
                 )
             })),
-            span: p.span,
+            span: self.lower_span(p.span),
         })
     }
 
@@ -370,14 +365,14 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         );
 
         hir::PathSegment {
-            ident: segment.ident,
+            ident: self.lower_ident(segment.ident),
             hir_id: Some(id),
             res: Some(self.lower_res(res)),
             infer_args,
             args: if generic_args.is_empty() && generic_args.span.is_empty() {
                 None
             } else {
-                Some(self.arena.alloc(generic_args.into_generic_args(self.arena)))
+                Some(generic_args.into_generic_args(self))
             },
         }
     }
@@ -459,6 +454,12 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             parenthesized: false,
             span_ext: DUMMY_SP,
         });
-        hir::TypeBinding { hir_id: self.next_id(), gen_args, span, ident, kind }
+        hir::TypeBinding {
+            hir_id: self.next_id(),
+            gen_args,
+            span: self.lower_span(span),
+            ident,
+            kind,
+        }
     }
 }

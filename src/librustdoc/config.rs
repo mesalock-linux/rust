@@ -233,6 +233,8 @@ crate struct RenderOptions {
     crate extension_css: Option<PathBuf>,
     /// A map of crate names to the URL to use instead of querying the crate's `html_root_url`.
     crate extern_html_root_urls: BTreeMap<String, String>,
+    /// Whether to give precedence to `html_root_url` or `--exten-html-root-url`.
+    crate extern_html_root_takes_precedence: bool,
     /// A map of the default settings (values are as for DOM storage API). Keys should lack the
     /// `rustdoc-` prefix.
     crate default_settings: FxHashMap<String, String>,
@@ -276,6 +278,8 @@ crate struct RenderOptions {
     crate show_type_layout: bool,
     crate unstable_features: rustc_feature::UnstableFeatures,
     crate emit: Vec<EmitType>,
+    /// If `true`, HTML source pages will generate links for items to their definition.
+    crate generate_link_to_definition: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -655,9 +659,19 @@ impl Options {
         let generate_redirect_map = matches.opt_present("generate-redirect-map");
         let show_type_layout = matches.opt_present("show-type-layout");
         let nocapture = matches.opt_present("nocapture");
+        let generate_link_to_definition = matches.opt_present("generate-link-to-definition");
+        let extern_html_root_takes_precedence =
+            matches.opt_present("extern-html-root-takes-precedence");
 
-        let (lint_opts, describe_lints, lint_cap) =
-            get_cmd_lint_options(matches, error_format, &debugging_opts);
+        if generate_link_to_definition && (show_coverage || output_format != OutputFormat::Html) {
+            diag.struct_err(
+                "--generate-link-to-definition option can only be used with HTML output format",
+            )
+            .emit();
+            return Err(1);
+        }
+
+        let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
 
         Ok(Options {
             input,
@@ -703,6 +717,7 @@ impl Options {
                 themes,
                 extension_css,
                 extern_html_root_urls,
+                extern_html_root_takes_precedence,
                 default_settings,
                 resource_suffix,
                 enable_minification,
@@ -721,6 +736,7 @@ impl Options {
                     crate_name.as_deref(),
                 ),
                 emit,
+                generate_link_to_definition,
             },
             crate_name,
             output_format,

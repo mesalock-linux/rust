@@ -619,7 +619,7 @@ impl<'test> TestCx<'test> {
             return;
         }
 
-        // additionally, run `--pretty expanded` and try to build it.
+        // additionally, run `-Zunpretty=expanded` and try to build it.
         let proc_res = self.print_source(ReadFrom::Path, "expanded");
         if !proc_res.status.success() {
             self.fatal_proc_rec("pretty-printing (expanded) failed", &proc_res);
@@ -1733,7 +1733,7 @@ impl<'test> TestCx<'test> {
     }
 
     /// For each `aux-build: foo/bar` annotation, we check to find the
-    /// file in a `auxiliary` directory relative to the test itself.
+    /// file in an `auxiliary` directory relative to the test itself.
     fn compute_aux_test_paths(&self, rel_ab: &str) -> TestPaths {
         let test_ab = self
             .testpaths
@@ -3227,7 +3227,7 @@ impl<'test> TestCx<'test> {
                 // so it needs to be removed when comparing the run-pass test execution output
                 lazy_static! {
                     static ref REMOTE_TEST_RE: Regex = Regex::new(
-                        "^uploaded \"\\$TEST_BUILD_DIR(/[[:alnum:]_\\-]+)+\", waiting for result\n"
+                        "^uploaded \"\\$TEST_BUILD_DIR(/[[:alnum:]_\\-.]+)+\", waiting for result\n"
                     )
                     .unwrap();
                 }

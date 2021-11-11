@@ -4,7 +4,6 @@
 
 use crate::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
 use crate::char::EscapeDebugExtArgs;
-use crate::iter;
 use crate::marker::PhantomData;
 use crate::mem;
 use crate::num::fmt as numfmt;
@@ -334,10 +333,29 @@ enum FlagV1 {
 impl<'a> Arguments<'a> {
     /// When using the format_args!() macro, this function is used to generate the
     /// Arguments structure.
+    #[cfg(not(bootstrap))]
     #[doc(hidden)]
     #[inline]
     #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
-    pub fn new_v1(pieces: &'a [&'static str], args: &'a [ArgumentV1<'a>]) -> Arguments<'a> {
+    #[rustc_const_unstable(feature = "const_fmt_arguments_new", issue = "none")]
+    pub const unsafe fn new_v1(
+        pieces: &'a [&'static str],
+        args: &'a [ArgumentV1<'a>],
+    ) -> Arguments<'a> {
+        if pieces.len() < args.len() || pieces.len() > args.len() + 1 {
+            panic!("invalid args");
+        }
+        Arguments { pieces, fmt: None, args }
+    }
+    #[cfg(bootstrap)]
+    #[doc(hidden)]
+    #[inline]
+    #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
+    #[rustc_const_unstable(feature = "const_fmt_arguments_new", issue = "none")]
+    pub const fn new_v1(pieces: &'a [&'static str], args: &'a [ArgumentV1<'a>]) -> Arguments<'a> {
+        if pieces.len() < args.len() || pieces.len() > args.len() + 1 {
+            panic!("invalid args");
+        }
         Arguments { pieces, fmt: None, args }
     }
 
@@ -347,10 +365,24 @@ impl<'a> Arguments<'a> {
     /// `CountIsParam` or `CountIsNextParam` has to point to an argument
     /// created with `argumentusize`. However, failing to do so doesn't cause
     /// unsafety, but will ignore invalid .
+    #[cfg(not(bootstrap))]
     #[doc(hidden)]
     #[inline]
     #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
-    pub fn new_v1_formatted(
+    #[rustc_const_unstable(feature = "const_fmt_arguments_new", issue = "none")]
+    pub const unsafe fn new_v1_formatted(
+        pieces: &'a [&'static str],
+        args: &'a [ArgumentV1<'a>],
+        fmt: &'a [rt::v1::Argument],
+    ) -> Arguments<'a> {
+        Arguments { pieces, fmt: Some(fmt), args }
+    }
+    #[cfg(bootstrap)]
+    #[doc(hidden)]
+    #[inline]
+    #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
+    #[rustc_const_unstable(feature = "const_fmt_arguments_new", issue = "none")]
+    pub const fn new_v1_formatted(
         pieces: &'a [&'static str],
         args: &'a [ArgumentV1<'a>],
         fmt: &'a [rt::v1::Argument],
@@ -370,7 +402,7 @@ impl<'a> Arguments<'a> {
 
         if self.args.is_empty() {
             pieces_length
-        } else if self.pieces[0] == "" && pieces_length < 16 {
+        } else if !self.pieces.is_empty() && self.pieces[0].is_empty() && pieces_length < 16 {
             // If the format string starts with an argument,
             // don't preallocate anything, unless length
             // of pieces is significant.
@@ -1108,7 +1140,10 @@ pub fn write(output: &mut dyn Write, args: Arguments<'_>) -> Result {
     match args.fmt {
         None => {
             // We can use default formatting parameters for all arguments.
-            for (arg, piece) in iter::zip(args.args, args.pieces) {
+            for (i, arg) in args.args.iter().enumerate() {
+                // SAFETY: args.args and args.pieces come from the same Arguments,
+                // which guarantees the indexes are always within bounds.
+                let piece = unsafe { args.pieces.get_unchecked(i) };
                 if !piece.is_empty() {
                     formatter.buf.write_str(*piece)?;
                 }
@@ -1119,13 +1154,16 @@ pub fn write(output: &mut dyn Write, args: Arguments<'_>) -> Result {
         Some(fmt) => {
             // Every spec has a corresponding argument that is preceded by
             // a string piece.
-            for (arg, piece) in iter::zip(fmt, args.pieces) {
+            for (i, arg) in fmt.iter().enumerate() {
+                // SAFETY: fmt and args.pieces come from the same Arguments,
+                // which guarantees the indexes are always within bounds.
+                let piece = unsafe { args.pieces.get_unchecked(i) };
                 if !piece.is_empty() {
                     formatter.buf.write_str(*piece)?;
                 }
                 // SAFETY: arg and args.args come from the same Arguments,
                 // which guarantees the indexes are always within bounds.
-                unsafe { run(&mut formatter, arg, &args.args) }?;
+                unsafe { run(&mut formatter, arg, args.args) }?;
                 idx += 1;
             }
         }
@@ -1371,7 +1409,7 @@ impl<'a> Formatter<'a> {
                 // we know that it can't panic. Use `get` + `unwrap_or` to avoid
                 // `unsafe` and otherwise don't emit any panic-related code
                 // here.
-                s.get(..i).unwrap_or(&s)
+                s.get(..i).unwrap_or(s)
             } else {
                 &s
             }
@@ -1383,16 +1421,21 @@ impl<'a> Formatter<'a> {
             // If we're under the maximum length, and there's no minimum length
             // requirements, then we can just emit the string
             None => self.buf.write_str(s),
-            // If we're under the maximum width, check if we're over the minimum
-            // width, if so it's as easy as just emitting the string.
-            Some(width) if s.chars().count() >= width => self.buf.write_str(s),
-            // If we're under both the maximum and the minimum width, then fill
-            // up the minimum width with the specified string + some alignment.
             Some(width) => {
-                let align = rt::v1::Alignment::Left;
-                let post_padding = self.padding(width - s.chars().count(), align)?;
-                self.buf.write_str(s)?;
-                post_padding.write(self.buf)
+                let chars_count = s.chars().count();
+                // If we're under the maximum width, check if we're over the minimum
+                // width, if so it's as easy as just emitting the string.
+                if chars_count >= width {
+                    self.buf.write_str(s)
+                }
+                // If we're under both the maximum and the minimum width, then fill
+                // up the minimum width with the specified string + some alignment.
+                else {
+                    let align = rt::v1::Alignment::Left;
+                    let post_padding = self.padding(width - chars_count, align)?;
+                    self.buf.write_str(s)?;
+                    post_padding.write(self.buf)
+                }
             }
         }
     }

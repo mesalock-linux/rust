@@ -3,7 +3,6 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(box_patterns)]
-#![feature(box_syntax)]
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
@@ -72,6 +71,7 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
         file: source_util::expand_file,
         format_args_nl: format::expand_format_args_nl,
         format_args: format::expand_format_args,
+        const_format_args: format::expand_format_args,
         global_asm: asm::expand_global_asm,
         include_bytes: source_util::expand_include_bytes,
         include_str: source_util::expand_include_str,

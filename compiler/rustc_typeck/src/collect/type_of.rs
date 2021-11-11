@@ -7,7 +7,7 @@ use rustc_hir::intravisit;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::{HirId, Node};
 use rustc_middle::hir::map::Map;
-use rustc_middle::ty::subst::{GenericArgKind, InternalSubsts};
+use rustc_middle::ty::subst::{GenericArgKind, InternalSubsts, SubstsRef};
 use rustc_middle::ty::util::IntTypeExt;
 use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFoldable, TypeFolder};
 use rustc_span::symbol::Ident;
@@ -20,6 +20,9 @@ use super::{bad_placeholder_type, is_suggestable_infer_ty};
 ///
 /// This should be called using the query `tcx.opt_const_param_of`.
 pub(super) fn opt_const_param_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<DefId> {
+    // FIXME(generic_arg_infer): allow for returning DefIds of inference of
+    // GenericArg::Infer below. This may require a change where GenericArg::Infer has some flag
+    // for const or type.
     use hir::*;
     let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
 
@@ -187,8 +190,12 @@ pub(super) fn opt_const_param_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<
                 // Try to use the segment resolution if it is valid, otherwise we
                 // default to the path resolution.
                 let res = segment.res.filter(|&r| r != Res::Err).unwrap_or(path.res);
+                use def::CtorOf;
                 let generics = match res {
-                    Res::Def(DefKind::Ctor(..), def_id) => {
+                    Res::Def(DefKind::Ctor(CtorOf::Variant, _), def_id) => tcx.generics_of(
+                        tcx.parent(def_id).and_then(|def_id| tcx.parent(def_id)).unwrap(),
+                    ),
+                    Res::Def(DefKind::Variant | DefKind::Ctor(CtorOf::Struct, _), def_id) => {
                         tcx.generics_of(tcx.parent(def_id).unwrap())
                     }
                     // Other `DefKind`s don't have generics and would ICE when calling
@@ -197,7 +204,6 @@ pub(super) fn opt_const_param_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<
                         DefKind::Struct
                         | DefKind::Union
                         | DefKind::Enum
-                        | DefKind::Variant
                         | DefKind::Trait
                         | DefKind::OpaqueTy
                         | DefKind::TyAlias
@@ -266,6 +272,31 @@ fn get_path_containing_arg_in_pat<'hir>(
         _ => true,
     });
     arg_path
+}
+
+pub(super) fn default_anon_const_substs(tcx: TyCtxt<'_>, def_id: DefId) -> SubstsRef<'_> {
+    let generics = tcx.generics_of(def_id);
+    if let Some(parent) = generics.parent {
+        // This is the reason we bother with having optional anon const substs.
+        //
+        // In the future the substs of an anon const will depend on its parents predicates
+        // at which point eagerly looking at them will cause a query cycle.
+        //
+        // So for now this is only an assurance that this approach won't cause cycle errors in
+        // the future.
+        let _cycle_check = tcx.predicates_of(parent);
+    }
+
+    let substs = InternalSubsts::identity_for_item(tcx, def_id);
+    // We only expect substs with the following type flags as default substs.
+    //
+    // Getting this wrong can lead to ICE and unsoundness, so we assert it here.
+    for arg in substs.iter() {
+        let allowed_flags = ty::TypeFlags::MAY_NEED_DEFAULT_CONST_SUBSTS
+            | ty::TypeFlags::STILL_FURTHER_SPECIALIZABLE;
+        assert!(!arg.has_type_flags(!allowed_flags));
+    }
+    substs
 }
 
 pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
@@ -396,6 +427,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 }
                 ItemKind::Trait(..)
                 | ItemKind::TraitAlias(..)
+                | ItemKind::Macro(..)
                 | ItemKind::Mod(..)
                 | ItemKind::ForeignMod { .. }
                 | ItemKind::GlobalAsm(..)
@@ -440,13 +472,13 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             }
         }
 
-        Node::AnonConst(_) => {
-            if let Some(param) = tcx.opt_const_param_of(def_id) {
-                // We defer to `type_of` of the corresponding parameter
-                // for generic arguments.
-                return tcx.type_of(param);
-            }
+        Node::AnonConst(_) if let Some(param) = tcx.opt_const_param_of(def_id) => {
+            // We defer to `type_of` of the corresponding parameter
+            // for generic arguments.
+            tcx.type_of(param)
+        }
 
+        Node::AnonConst(_) => {
             let parent_node = tcx.hir().get(tcx.hir().get_parent_node(hir_id));
             match parent_node {
                 Node::Ty(&Ty { kind: TyKind::Array(_, ref constant), .. })
@@ -534,13 +566,7 @@ fn find_opaque_ty_constraints(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Ty<'_> {
             }
             // Calling `mir_borrowck` can lead to cycle errors through
             // const-checking, avoid calling it if we don't have to.
-            if self
-                .tcx
-                .typeck(def_id)
-                .concrete_opaque_types
-                .any_value_matching(|(key, _)| key.def_id == self.def_id)
-                .is_none()
-            {
+            if !self.tcx.typeck(def_id).concrete_opaque_types.contains(&self.def_id) {
                 debug!("no constraints in typeck results");
                 return;
             }
@@ -750,29 +776,31 @@ fn infer_placeholder_type<'a>(
     // us to improve in typeck so we do that now.
     match tcx.sess.diagnostic().steal_diagnostic(span, StashKey::ItemNoType) {
         Some(mut err) => {
-            // The parser provided a sub-optimal `HasPlaceholders` suggestion for the type.
-            // We are typeck and have the real type, so remove that and suggest the actual type.
-            err.suggestions.clear();
+            if !ty.references_error() {
+                // The parser provided a sub-optimal `HasPlaceholders` suggestion for the type.
+                // We are typeck and have the real type, so remove that and suggest the actual type.
+                err.suggestions.clear();
 
-            // Suggesting unnameable types won't help.
-            let mut mk_nameable = MakeNameable::new(tcx);
-            let ty = mk_nameable.fold_ty(ty);
-            let sugg_ty = if mk_nameable.success { Some(ty) } else { None };
-            if let Some(sugg_ty) = sugg_ty {
-                err.span_suggestion(
-                    span,
-                    &format!("provide a type for the {item}", item = kind),
-                    format!("{}: {}", item_ident, sugg_ty),
-                    Applicability::MachineApplicable,
-                );
-            } else {
-                err.span_note(
-                    tcx.hir().body(body_id).value.span,
-                    &format!("however, the inferred type `{}` cannot be named", ty.to_string()),
-                );
+                // Suggesting unnameable types won't help.
+                let mut mk_nameable = MakeNameable::new(tcx);
+                let ty = mk_nameable.fold_ty(ty);
+                let sugg_ty = if mk_nameable.success { Some(ty) } else { None };
+                if let Some(sugg_ty) = sugg_ty {
+                    err.span_suggestion(
+                        span,
+                        &format!("provide a type for the {item}", item = kind),
+                        format!("{}: {}", item_ident, sugg_ty),
+                        Applicability::MachineApplicable,
+                    );
+                } else {
+                    err.span_note(
+                        tcx.hir().body(body_id).value.span,
+                        &format!("however, the inferred type `{}` cannot be named", ty.to_string()),
+                    );
+                }
             }
 
-            err.emit_unless(ty.references_error());
+            err.emit();
         }
         None => {
             let mut diag = bad_placeholder_type(tcx, vec![span], kind);

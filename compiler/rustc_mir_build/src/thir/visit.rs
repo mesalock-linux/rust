@@ -34,7 +34,7 @@ pub fn walk_expr<'a, 'tcx: 'a, V: Visitor<'a, 'tcx>>(visitor: &mut V, expr: &Exp
             visitor.visit_expr(&visitor.thir()[value])
         }
         Box { value } => visitor.visit_expr(&visitor.thir()[value]),
-        If { cond, then, else_opt } => {
+        If { cond, then, else_opt, if_then_scope: _ } => {
             visitor.visit_expr(&visitor.thir()[cond]);
             visitor.visit_expr(&visitor.thir()[then]);
             if let Some(else_expr) = else_opt {
@@ -57,6 +57,9 @@ pub fn walk_expr<'a, 'tcx: 'a, V: Visitor<'a, 'tcx>>(visitor: &mut V, expr: &Exp
         Use { source } => visitor.visit_expr(&visitor.thir()[source]),
         NeverToAny { source } => visitor.visit_expr(&visitor.thir()[source]),
         Pointer { source, cast: _ } => visitor.visit_expr(&visitor.thir()[source]),
+        Let { expr, .. } => {
+            visitor.visit_expr(&visitor.thir()[expr]);
+        }
         Loop { body } => visitor.visit_expr(&visitor.thir()[body]),
         Match { scrutinee, ref arms } => {
             visitor.visit_expr(&visitor.thir()[scrutinee]);

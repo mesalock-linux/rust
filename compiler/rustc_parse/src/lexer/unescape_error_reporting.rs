@@ -153,23 +153,54 @@ pub(crate) fn emit_unescape_error(
         EscapeError::NonAsciiCharInByte => {
             assert!(mode.is_bytes());
             let (c, span) = last_char();
-            handler
-                .struct_span_err(span, "non-ASCII character in byte constant")
-                .span_label(span, "byte constant must be ASCII")
-                .span_suggestion(
+            let mut err = handler.struct_span_err(span, "non-ASCII character in byte constant");
+            let postfix = if unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) == 0 {
+                format!(" but is {:?}", c)
+            } else {
+                String::new()
+            };
+            err.span_label(span, &format!("byte constant must be ASCII{}", postfix));
+            if (c as u32) <= 0xFF {
+                err.span_suggestion(
                     span,
-                    "use a \\xHH escape for a non-ASCII byte",
+                    &format!(
+                        "if you meant to use the unicode code point for {:?}, use a \\xHH escape",
+                        c
+                    ),
                     format!("\\x{:X}", c as u32),
-                    Applicability::MachineApplicable,
-                )
-                .emit();
+                    Applicability::MaybeIncorrect,
+                );
+            } else if matches!(mode, Mode::Byte) {
+                err.span_label(span, "this multibyte character does not fit into a single byte");
+            } else if matches!(mode, Mode::ByteStr) {
+                let mut utf8 = String::new();
+                utf8.push(c);
+                err.span_suggestion(
+                    span,
+                    &format!(
+                        "if you meant to use the UTF-8 encoding of {:?}, use \\xHH escapes",
+                        c
+                    ),
+                    utf8.as_bytes()
+                        .iter()
+                        .map(|b: &u8| format!("\\x{:X}", *b))
+                        .fold("".to_string(), |a, c| a + &c),
+                    Applicability::MaybeIncorrect,
+                );
+            }
+            err.emit();
         }
         EscapeError::NonAsciiCharInByteString => {
             assert!(mode.is_bytes());
-            let (_c, span) = last_char();
+            let (c, span) = last_char();
+            let postfix = if unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) == 0 {
+                format!(" but is {:?}", c)
+            } else {
+                String::new()
+            };
             handler
                 .struct_span_err(span, "raw byte string must be ASCII")
-                .span_label(span, "must be ASCII")
+                .span_label(span, &format!("must be ASCII{}", postfix))
                 .emit();
         }
         EscapeError::OutOfRangeHexEscape => {
@@ -252,6 +283,17 @@ pub(crate) fn emit_unescape_error(
         EscapeError::LoneSlash => {
             let msg = "invalid trailing slash in literal";
             handler.struct_span_err(span, msg).span_label(span, msg).emit();
+        }
+        EscapeError::UnskippedWhitespaceWarning => {
+            let (c, char_span) = last_char();
+            let msg =
+                format!("non-ASCII whitespace symbol '{}' is not skipped", c.escape_unicode());
+            handler.struct_span_warn(span, &msg).span_label(char_span, &msg).emit();
+        }
+        EscapeError::MultipleSkippedLinesWarning => {
+            let msg = "multiple lines skipped by escaped newline";
+            let bottom_msg = "skipping everything up to and including this point";
+            handler.struct_span_warn(span, msg).span_label(span, bottom_msg).emit();
         }
     }
 }

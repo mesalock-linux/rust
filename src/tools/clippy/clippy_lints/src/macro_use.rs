@@ -12,14 +12,14 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::{edition::Edition, sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `#[macro_use] use...`.
+    /// ### What it does
+    /// Checks for `#[macro_use] use...`.
     ///
-    /// **Why is this bad?** Since the Rust 2018 edition you can import
+    /// ### Why is this bad?
+    /// Since the Rust 2018 edition you can import
     /// macro's directly, this is considered idiomatic.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// #[macro_use]
     /// use some_macro;
@@ -47,11 +47,8 @@ pub struct MacroRefData {
 
 impl MacroRefData {
     pub fn new(name: String, callee: Span, cx: &LateContext<'_>) -> Self {
-        let mut path = cx
-            .sess()
-            .source_map()
-            .span_to_filename(callee)
-            .prefer_local()
+        let sm = cx.sess().source_map();
+        let mut path = sm.filename_for_diagnostics(&sm.span_to_filename(callee))
             .to_string();
 
         // std lib paths are <::std::module::file type>

@@ -30,7 +30,6 @@
 ///
 /// ```
 /// # #![feature(ready_macro)]
-/// #
 /// # use std::task::{Context, Poll};
 /// # use std::future::{self, Future};
 /// # use std::pin::Pin;

@@ -14,7 +14,10 @@ use rustc_span::{MultiSpan, SourceFile, Span};
 
 use crate::snippet::{Annotation, AnnotationType, Line, MultilineAnnotation, Style, StyledString};
 use crate::styled_buffer::StyledBuffer;
-use crate::{CodeSuggestion, Diagnostic, DiagnosticId, Level, SubDiagnostic, SuggestionStyle};
+use crate::{
+    CodeSuggestion, Diagnostic, DiagnosticId, Level, SubDiagnostic, SubstitutionHighlight,
+    SuggestionStyle,
+};
 
 use rustc_lint_defs::pluralize;
 
@@ -954,7 +957,6 @@ impl EmitterWriter {
         //   |
         for pos in 0..=line_len {
             draw_col_separator(buffer, line_offset + pos + 1, width_offset - 2);
-            buffer.putc(line_offset + pos + 1, width_offset - 2, '|', Style::LineNumber);
         }
 
         // Write the horizontal lines for multiline annotations
@@ -1318,7 +1320,7 @@ impl EmitterWriter {
                         buffer_msg_line_offset,
                         &format!(
                             "{}:{}:{}",
-                            loc.file.name.prefer_local(),
+                            sm.filename_for_diagnostics(&loc.file.name),
                             sm.doctest_offset_line(&loc.file.name, loc.line),
                             loc.col.0 + 1,
                         ),
@@ -1332,7 +1334,7 @@ impl EmitterWriter {
                         0,
                         &format!(
                             "{}:{}:{}: ",
-                            loc.file.name.prefer_local(),
+                            sm.filename_for_diagnostics(&loc.file.name),
                             sm.doctest_offset_line(&loc.file.name, loc.line),
                             loc.col.0 + 1,
                         ),
@@ -1344,7 +1346,11 @@ impl EmitterWriter {
                 let buffer_msg_line_offset = buffer.num_lines();
 
                 // Add spacing line
-                draw_col_separator(&mut buffer, buffer_msg_line_offset, max_line_num_len + 1);
+                draw_col_separator_no_space(
+                    &mut buffer,
+                    buffer_msg_line_offset,
+                    max_line_num_len + 1,
+                );
 
                 // Then, the secondary file indicator
                 buffer.prepend(buffer_msg_line_offset + 1, "::: ", Style::LineNumber);
@@ -1356,12 +1362,12 @@ impl EmitterWriter {
                     };
                     format!(
                         "{}:{}{}",
-                        annotated_file.file.name.prefer_local(),
+                        sm.filename_for_diagnostics(&annotated_file.file.name),
                         sm.doctest_offset_line(&annotated_file.file.name, first_line.line_index),
                         col
                     )
                 } else {
-                    format!("{}", annotated_file.file.name.prefer_local())
+                    format!("{}", sm.filename_for_diagnostics(&annotated_file.file.name))
                 };
                 buffer.append(buffer_msg_line_offset + 1, &loc, Style::LineAndColumn);
                 for _ in 0..max_line_num_len {
@@ -1587,8 +1593,11 @@ impl EmitterWriter {
         );
 
         let mut row_num = 2;
+        draw_col_separator_no_space(&mut buffer, 1, max_line_num_len + 1);
         let mut notice_capitalization = false;
-        for (complete, parts, only_capitalization) in suggestions.iter().take(MAX_SUGGESTIONS) {
+        for (complete, parts, highlights, only_capitalization) in
+            suggestions.iter().take(MAX_SUGGESTIONS)
+        {
             notice_capitalization |= only_capitalization;
             // Only show underline if the suggestion spans a single line and doesn't cover the
             // entirety of the code output. If you have multiple replacements in the same line
@@ -1596,16 +1605,26 @@ impl EmitterWriter {
             let show_underline = !(parts.len() == 1 && parts[0].snippet.trim() == complete.trim())
                 && complete.lines().count() == 1;
 
-            let lines = sm
+            let has_deletion = parts.iter().any(|p| p.is_deletion());
+            let is_multiline = complete.lines().count() > 1;
+
+            let show_diff = has_deletion && !is_multiline;
+
+            if show_diff {
+                row_num += 1;
+            }
+
+            let file_lines = sm
                 .span_to_lines(parts[0].span)
                 .expect("span_to_lines failed when emitting suggestion");
 
-            assert!(!lines.lines.is_empty() || parts[0].span.is_dummy());
+            assert!(!file_lines.lines.is_empty() || parts[0].span.is_dummy());
 
             let line_start = sm.lookup_char_pos(parts[0].span.lo()).line;
             draw_col_separator_no_space(&mut buffer, 1, max_line_num_len + 1);
             let mut lines = complete.lines();
-            for (line_pos, line) in lines.by_ref().take(MAX_SUGGESTION_HIGHLIGHT_LINES).enumerate()
+            for (line_pos, (line, highlight_parts)) in
+                lines.by_ref().zip(highlights).take(MAX_SUGGESTION_HIGHLIGHT_LINES).enumerate()
             {
                 // Print the span column to avoid confusion
                 buffer.puts(
@@ -1614,9 +1633,68 @@ impl EmitterWriter {
                     &self.maybe_anonymized(line_start + line_pos),
                     Style::LineNumber,
                 );
+                if show_diff {
+                    // Add the line number for both addition and removal to drive the point home.
+                    //
+                    // N - fn foo<A: T>(bar: A) {
+                    // N + fn foo(bar: impl T) {
+                    buffer.puts(
+                        row_num - 1,
+                        0,
+                        &self.maybe_anonymized(line_start + line_pos),
+                        Style::LineNumber,
+                    );
+                    buffer.puts(row_num - 1, max_line_num_len + 1, "- ", Style::Removal);
+                    buffer.puts(
+                        row_num - 1,
+                        max_line_num_len + 3,
+                        &replace_tabs(
+                            &*file_lines
+                                .file
+                                .get_line(file_lines.lines[line_pos].line_index)
+                                .unwrap(),
+                        ),
+                        Style::NoStyle,
+                    );
+                    buffer.puts(row_num, max_line_num_len + 1, "+ ", Style::Addition);
+                } else if is_multiline {
+                    match &highlight_parts[..] {
+                        [SubstitutionHighlight { start: 0, end }] if *end == line.len() => {
+                            buffer.puts(row_num, max_line_num_len + 1, "+ ", Style::Addition);
+                        }
+                        [] => {
+                            draw_col_separator(&mut buffer, row_num, max_line_num_len + 1);
+                        }
+                        _ => {
+                            buffer.puts(row_num, max_line_num_len + 1, "~ ", Style::Addition);
+                        }
+                    }
+                } else {
+                    draw_col_separator(&mut buffer, row_num, max_line_num_len + 1);
+                }
+
                 // print the suggestion
-                draw_col_separator(&mut buffer, row_num, max_line_num_len + 1);
                 buffer.append(row_num, &replace_tabs(line), Style::NoStyle);
+
+                // Colorize addition/replacements with green.
+                for &SubstitutionHighlight { start, end } in highlight_parts {
+                    // Account for tabs when highlighting (#87972).
+                    let tabs: usize = line
+                        .chars()
+                        .take(start)
+                        .map(|ch| match ch {
+                            '\t' => 3,
+                            _ => 0,
+                        })
+                        .sum();
+                    buffer.set_style_range(
+                        row_num,
+                        max_line_num_len + 3 + start + tabs,
+                        max_line_num_len + 3 + end + tabs,
+                        Style::Addition,
+                        true,
+                    );
+                }
                 row_num += 1;
             }
 
@@ -1651,24 +1729,28 @@ impl EmitterWriter {
                     let underline_start = (span_start_pos + start) as isize + offset;
                     let underline_end = (span_start_pos + start + sub_len) as isize + offset;
                     assert!(underline_start >= 0 && underline_end >= 0);
+                    let padding: usize = max_line_num_len + 3;
                     for p in underline_start..underline_end {
-                        buffer.putc(
-                            row_num,
-                            ((max_line_num_len + 3) as isize + p) as usize,
-                            '^',
-                            Style::UnderlinePrimary,
-                        );
-                    }
-                    // underline removals too
-                    if underline_start == underline_end {
-                        for p in underline_start - 1..underline_start + 1 {
+                        if !show_diff {
+                            // If this is a replacement, underline with `^`, if this is an addition
+                            // underline with `+`.
                             buffer.putc(
                                 row_num,
-                                ((max_line_num_len + 3) as isize + p) as usize,
-                                '-',
-                                Style::UnderlineSecondary,
+                                (padding as isize + p) as usize,
+                                if part.is_addition(&sm) { '+' } else { '~' },
+                                Style::Addition,
                             );
                         }
+                    }
+                    if show_diff {
+                        // Colorize removal with red in diff format.
+                        buffer.set_style_range(
+                            row_num - 2,
+                            (padding as isize + span_start_pos as isize) as usize,
+                            (padding as isize + span_end_pos as isize) as usize,
+                            Style::Removal,
+                            true,
+                        );
                     }
 
                     // length of the code after substitution
@@ -1972,8 +2054,26 @@ fn num_decimal_digits(num: usize) -> usize {
     MAX_DIGITS
 }
 
+// We replace some characters so the CLI output is always consistent and underlines aligned.
+const OUTPUT_REPLACEMENTS: &[(char, &str)] = &[
+    ('\t', "    "),   // We do our own tab replacement
+    ('\u{202A}', ""), // The following unicode text flow control characters are inconsistently
+    ('\u{202B}', ""), // supported accross CLIs and can cause confusion due to the bytes on disk
+    ('\u{202D}', ""), // not corresponding to the visible source code, so we replace them always.
+    ('\u{202E}', ""),
+    ('\u{2066}', ""),
+    ('\u{2067}', ""),
+    ('\u{2068}', ""),
+    ('\u{202C}', ""),
+    ('\u{2069}', ""),
+];
+
 fn replace_tabs(str: &str) -> String {
-    str.replace('\t', "    ")
+    let mut s = str.to_string();
+    for (c, replacement) in OUTPUT_REPLACEMENTS {
+        s = s.replace(*c, replacement);
+    }
+    s
 }
 
 fn draw_col_separator(buffer: &mut StyledBuffer, line: usize, col: usize) {
@@ -2126,6 +2226,12 @@ impl<'a> WritableDst<'a> {
     fn apply_style(&mut self, lvl: Level, style: Style) -> io::Result<()> {
         let mut spec = ColorSpec::new();
         match style {
+            Style::Addition => {
+                spec.set_fg(Some(Color::Green)).set_intense(true);
+            }
+            Style::Removal => {
+                spec.set_fg(Some(Color::Red)).set_intense(true);
+            }
             Style::LineAndColumn => {}
             Style::LineNumber => {
                 spec.set_bold(true);

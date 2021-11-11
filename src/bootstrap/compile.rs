@@ -23,7 +23,7 @@ use serde::Deserialize;
 use crate::builder::Cargo;
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
 use crate::cache::{Interned, INTERNER};
-use crate::config::TargetSelection;
+use crate::config::{LlvmLibunwind, TargetSelection};
 use crate::dist;
 use crate::native;
 use crate::tool::SourceType;
@@ -142,6 +142,14 @@ fn copy_and_stamp(
     target_deps.push((target, dependency_type));
 }
 
+fn copy_llvm_libunwind(builder: &Builder<'_>, target: TargetSelection, libdir: &Path) -> PathBuf {
+    let libunwind_path = builder.ensure(native::Libunwind { target });
+    let libunwind_source = libunwind_path.join("libunwind.a");
+    let libunwind_target = libdir.join("libunwind.a");
+    builder.copy(&libunwind_source, &libunwind_target);
+    libunwind_target
+}
+
 /// Copies third party objects needed by various targets.
 fn copy_third_party_objects(
     builder: &Builder<'_>,
@@ -165,6 +173,15 @@ fn copy_third_party_objects(
                 .into_iter()
                 .map(|d| (d, DependencyType::Target)),
         );
+    }
+
+    if target == "x86_64-fortanix-unknown-sgx"
+        || builder.config.llvm_libunwind == LlvmLibunwind::InTree
+            && (target.contains("linux") || target.contains("fuchsia"))
+    {
+        let libunwind_path =
+            copy_llvm_libunwind(builder, target, &builder.sysroot_libdir(*compiler, target));
+        target_deps.push((libunwind_path, DependencyType::Target));
     }
 
     target_deps
@@ -208,6 +225,9 @@ fn copy_self_contained_objects(
             builder.copy(&src, &target);
             target_deps.push((target, DependencyType::TargetSelfContained));
         }
+
+        let libunwind_path = copy_llvm_libunwind(builder, target, &libdir_self_contained);
+        target_deps.push((libunwind_path, DependencyType::TargetSelfContained));
     } else if target.ends_with("-wasi") {
         let srcdir = builder
             .wasi_root(target)
@@ -806,6 +826,10 @@ impl Step for CodegenBackend {
 
         let tmp_stamp = out_dir.join(".tmp.stamp");
 
+        builder.info(&format!(
+            "Building stage{} codegen backend {} ({} -> {})",
+            compiler.stage, backend, &compiler.host, target
+        ));
         let files = run_cargo(builder, cargo, vec![], &tmp_stamp, vec![], false);
         if builder.config.dry_run {
             return;
@@ -1113,10 +1137,14 @@ impl Step for Assemble {
             // for `-Z gcc-ld=lld`
             let gcc_ld_dir = libdir_bin.join("gcc-ld");
             t!(fs::create_dir(&gcc_ld_dir));
-            builder.copy(
-                &lld_install.join("bin").join(&src_exe),
-                &gcc_ld_dir.join(exe("ld", target_compiler.host)),
-            );
+            for flavor in ["ld", "ld64"] {
+                let lld_wrapper_exe = builder.ensure(crate::tool::LldWrapper {
+                    compiler: build_compiler,
+                    target: target_compiler.host,
+                    flavor_feature: flavor,
+                });
+                builder.copy(&lld_wrapper_exe, &gcc_ld_dir.join(exe(flavor, target_compiler.host)));
+            }
         }
 
         // Similarly, copy `llvm-dwp` into libdir for Split DWARF. Only copy it when the LLVM

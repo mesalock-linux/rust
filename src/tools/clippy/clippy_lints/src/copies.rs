@@ -16,13 +16,13 @@ use rustc_span::{source_map::Span, symbol::Symbol, BytePos};
 use std::borrow::Cow;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for consecutive `if`s with the same condition.
+    /// ### What it does
+    /// Checks for consecutive `if`s with the same condition.
     ///
-    /// **Why is this bad?** This is probably a copy & paste error.
+    /// ### Why is this bad?
+    /// This is probably a copy & paste error.
     ///
-    /// **Known problems:** Hopefully none.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// if a == b {
     ///     …
@@ -47,15 +47,15 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for consecutive `if`s with the same function call.
+    /// ### What it does
+    /// Checks for consecutive `if`s with the same function call.
     ///
-    /// **Why is this bad?** This is probably a copy & paste error.
+    /// ### Why is this bad?
+    /// This is probably a copy & paste error.
     /// Despite the fact that function can have side effects and `if` works as
     /// intended, such an approach is implicit and can be considered a "code smell".
     ///
-    /// **Known problems:** Hopefully none.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// if foo() == bar {
     ///     …
@@ -94,14 +94,14 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `if/else` with the same body as the *then* part
+    /// ### What it does
+    /// Checks for `if/else` with the same body as the *then* part
     /// and the *else* part.
     ///
-    /// **Why is this bad?** This is probably a copy & paste error.
+    /// ### Why is this bad?
+    /// This is probably a copy & paste error.
     ///
-    /// **Known problems:** Hopefully none.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// let foo = if … {
     ///     42
@@ -115,17 +115,19 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks if the `if` and `else` block contain shared code that can be
+    /// ### What it does
+    /// Checks if the `if` and `else` block contain shared code that can be
     /// moved out of the blocks.
     ///
-    /// **Why is this bad?** Duplicate code is less maintainable.
+    /// ### Why is this bad?
+    /// Duplicate code is less maintainable.
     ///
-    /// **Known problems:**
+    /// ### Known problems
     /// * The lint doesn't check if the moved expressions modify values that are beeing used in
     ///   the if condition. The suggestion can in that case modify the behavior of the program.
     ///   See [rust-clippy#7452](https://github.com/rust-lang/rust-clippy/issues/7452)
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// let foo = if … {
     ///     println!("Hello World");
@@ -314,9 +316,10 @@ fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> Option<
     let mut start_eq = usize::MAX;
     let mut end_eq = usize::MAX;
     let mut expr_eq = true;
-    for win in blocks.windows(2) {
-        let l_stmts = win[0].stmts;
-        let r_stmts = win[1].stmts;
+    let mut iter = blocks.windows(2);
+    while let Some(&[win0, win1]) = iter.next() {
+        let l_stmts = win0.stmts;
+        let r_stmts = win1.stmts;
 
         // `SpanlessEq` now keeps track of the locals and is therefore context sensitive clippy#6752.
         // The comparison therefore needs to be done in a way that builds the correct context.
@@ -333,22 +336,22 @@ fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> Option<
             it1.zip(it2)
                 .fold(0, |acc, (l, r)| if evaluator.eq_stmt(l, r) { acc + 1 } else { 0 })
         };
-        let block_expr_eq = both(&win[0].expr, &win[1].expr, |l, r| evaluator.eq_expr(l, r));
+        let block_expr_eq = both(&win0.expr, &win1.expr, |l, r| evaluator.eq_expr(l, r));
 
         // IF_SAME_THEN_ELSE
         if_chain! {
             if block_expr_eq;
             if l_stmts.len() == r_stmts.len();
             if l_stmts.len() == current_start_eq;
-            if !is_lint_allowed(cx, IF_SAME_THEN_ELSE, win[0].hir_id);
-            if !is_lint_allowed(cx, IF_SAME_THEN_ELSE, win[1].hir_id);
+            if !is_lint_allowed(cx, IF_SAME_THEN_ELSE, win0.hir_id);
+            if !is_lint_allowed(cx, IF_SAME_THEN_ELSE, win1.hir_id);
             then {
                 span_lint_and_note(
                     cx,
                     IF_SAME_THEN_ELSE,
-                    win[0].span,
+                    win0.span,
                     "this `if` has identical blocks",
-                    Some(win[1].span),
+                    Some(win1.span),
                     "same as this",
                 );
 

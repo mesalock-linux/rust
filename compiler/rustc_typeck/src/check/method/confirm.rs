@@ -366,6 +366,13 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                     (GenericParamDefKind::Const { .. }, GenericArg::Const(ct)) => {
                         self.cfcx.const_arg_to_const(&ct.value, param.def_id).into()
                     }
+                    (GenericParamDefKind::Type { .. }, GenericArg::Infer(inf)) => {
+                        self.cfcx.ty_infer(Some(param), inf.span).into()
+                    }
+                    (GenericParamDefKind::Const { .. }, GenericArg::Infer(inf)) => {
+                        let tcx = self.cfcx.tcx();
+                        self.cfcx.ct_infer(tcx.type_of(param.def_id), Some(param), inf.span).into()
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -500,7 +507,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         traits::elaborate_predicates(self.tcx, predicates.predicates.iter().copied())
             // We don't care about regions here.
             .filter_map(|obligation| match obligation.predicate.kind().skip_binder() {
-                ty::PredicateKind::Trait(trait_pred, _) if trait_pred.def_id() == sized_def_id => {
+                ty::PredicateKind::Trait(trait_pred) if trait_pred.def_id() == sized_def_id => {
                     let span = iter::zip(&predicates.predicates, &predicates.spans)
                         .find_map(
                             |(p, span)| {

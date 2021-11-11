@@ -235,6 +235,7 @@
 #![feature(auto_traits)]
 #![feature(bench_black_box)]
 #![feature(box_syntax)]
+#![feature(c_unwind)]
 #![feature(c_variadic)]
 #![feature(cfg_accessible)]
 #![feature(cfg_eval)]
@@ -246,13 +247,16 @@
 #![feature(const_cstr_unchecked)]
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_fn_fn_ptr_basics)]
-#![feature(const_fn_transmute)]
+#![cfg_attr(bootstrap, feature(const_fn_transmute))]
+#![feature(const_format_args)]
 #![feature(const_io_structs)]
 #![feature(const_ip)]
 #![feature(const_ipv4)]
 #![feature(const_ipv6)]
+#![feature(const_option)]
 #![feature(const_raw_ptr_deref)]
 #![feature(const_socketaddr)]
+#![feature(const_trait_impl)]
 #![feature(container_error_extra)]
 #![feature(core_intrinsics)]
 #![feature(custom_test_frameworks)]
@@ -261,6 +265,7 @@
 #![feature(doc_keyword)]
 #![feature(doc_masked)]
 #![feature(doc_notable_trait)]
+#![cfg_attr(not(bootstrap), feature(doc_primitive))]
 #![feature(dropck_eyepatch)]
 #![feature(duration_checked_float)]
 #![feature(duration_constants)]
@@ -304,10 +309,10 @@
 #![feature(pin_static_ref)]
 #![feature(prelude_import)]
 #![feature(ptr_internals)]
-#![feature(ready_macro)]
 #![feature(rustc_attrs)]
 #![feature(rustc_private)]
-#![feature(shrink_to)]
+#![feature(saturating_div)]
+#![feature(saturating_int_impl)]
 #![feature(slice_concat_ext)]
 #![feature(slice_internals)]
 #![feature(slice_ptr_get)]
@@ -325,9 +330,8 @@
 #![feature(trace_macros)]
 #![feature(try_blocks)]
 #![feature(try_reserve)]
+#![feature(try_reserve_kind)]
 #![feature(unboxed_closures)]
-#![feature(unsafe_cell_raw_get)]
-#![feature(unwind_attributes)]
 #![feature(unwrap_infallible)]
 #![feature(vec_into_raw_parts)]
 #![feature(vec_spare_capacity)]
@@ -556,9 +560,9 @@ pub use core::{
 #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
 #[allow(deprecated)]
 pub use core::{
-    assert, assert_matches, cfg, column, compile_error, concat, concat_idents, env, file,
-    format_args, format_args_nl, include, include_bytes, include_str, line, llvm_asm, log_syntax,
-    module_path, option_env, stringify, trace_macros,
+    assert, assert_matches, cfg, column, compile_error, concat, concat_idents, const_format_args,
+    env, file, format_args, format_args_nl, include, include_bytes, include_str, line, llvm_asm,
+    log_syntax, module_path, option_env, stringify, trace_macros,
 };
 
 #[stable(feature = "core_primitive", since = "1.43.0")]

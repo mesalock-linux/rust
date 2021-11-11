@@ -5,9 +5,11 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(crate_visibility_modifier)]
 #![feature(backtrace)]
+#![feature(if_let_guard)]
 #![feature(format_args_capture)]
 #![feature(iter_zip)]
 #![feature(nll)]
+#![cfg_attr(bootstrap, allow(incomplete_features))] // if_let_guard
 
 #[macro_use]
 extern crate rustc_macros;
@@ -160,32 +162,77 @@ pub struct SubstitutionPart {
     pub snippet: String,
 }
 
+/// Used to translate between `Span`s and byte positions within a single output line in highlighted
+/// code of structured suggestions.
+#[derive(Debug, Clone, Copy)]
+pub struct SubstitutionHighlight {
+    start: usize,
+    end: usize,
+}
+
+impl SubstitutionPart {
+    pub fn is_addition(&self, sm: &SourceMap) -> bool {
+        !self.snippet.is_empty()
+            && sm
+                .span_to_snippet(self.span)
+                .map_or(self.span.is_empty(), |snippet| snippet.trim().is_empty())
+    }
+
+    pub fn is_deletion(&self) -> bool {
+        self.snippet.trim().is_empty()
+    }
+
+    pub fn is_replacement(&self, sm: &SourceMap) -> bool {
+        !self.snippet.is_empty()
+            && sm
+                .span_to_snippet(self.span)
+                .map_or(!self.span.is_empty(), |snippet| !snippet.trim().is_empty())
+    }
+}
+
 impl CodeSuggestion {
     /// Returns the assembled code suggestions, whether they should be shown with an underline
     /// and whether the substitution only differs in capitalization.
-    pub fn splice_lines(&self, sm: &SourceMap) -> Vec<(String, Vec<SubstitutionPart>, bool)> {
+    pub fn splice_lines(
+        &self,
+        sm: &SourceMap,
+    ) -> Vec<(String, Vec<SubstitutionPart>, Vec<Vec<SubstitutionHighlight>>, bool)> {
+        // For the `Vec<Vec<SubstitutionHighlight>>` value, the first level of the vector
+        // corresponds to the output snippet's lines, while the second level corresponds to the
+        // substrings within that line that should be highlighted.
+
         use rustc_span::{CharPos, Pos};
 
+        /// Append to a buffer the remainder of the line of existing source code, and return the
+        /// count of lines that have been added for accurate highlighting.
         fn push_trailing(
             buf: &mut String,
             line_opt: Option<&Cow<'_, str>>,
             lo: &Loc,
             hi_opt: Option<&Loc>,
-        ) {
+        ) -> usize {
+            let mut line_count = 0;
             let (lo, hi_opt) = (lo.col.to_usize(), hi_opt.map(|hi| hi.col.to_usize()));
             if let Some(line) = line_opt {
                 if let Some(lo) = line.char_indices().map(|(i, _)| i).nth(lo) {
                     let hi_opt = hi_opt.and_then(|hi| line.char_indices().map(|(i, _)| i).nth(hi));
                     match hi_opt {
-                        Some(hi) if hi > lo => buf.push_str(&line[lo..hi]),
+                        Some(hi) if hi > lo => {
+                            line_count = line[lo..hi].matches('\n').count();
+                            buf.push_str(&line[lo..hi])
+                        }
                         Some(_) => (),
-                        None => buf.push_str(&line[lo..]),
+                        None => {
+                            line_count = line[lo..].matches('\n').count();
+                            buf.push_str(&line[lo..])
+                        }
                     }
                 }
                 if hi_opt.is_none() {
                     buf.push('\n');
                 }
             }
+            line_count
         }
 
         assert!(!self.substitutions.is_empty());
@@ -220,6 +267,7 @@ impl CodeSuggestion {
                     return None;
                 }
 
+                let mut highlights = vec![];
                 // To build up the result, we do this for each span:
                 // - push the line segment trailing the previous span
                 //   (at the beginning a "phantom" span pointing at the start of the line)
@@ -236,17 +284,34 @@ impl CodeSuggestion {
                     lines.lines.get(0).and_then(|line0| sf.get_line(line0.line_index));
                 let mut buf = String::new();
 
+                let mut line_highlight = vec![];
+                // We need to keep track of the difference between the existing code and the added
+                // or deleted code in order to point at the correct column *after* substitution.
+                let mut acc = 0;
                 for part in &substitution.parts {
                     let cur_lo = sm.lookup_char_pos(part.span.lo());
                     if prev_hi.line == cur_lo.line {
-                        push_trailing(&mut buf, prev_line.as_ref(), &prev_hi, Some(&cur_lo));
+                        let mut count =
+                            push_trailing(&mut buf, prev_line.as_ref(), &prev_hi, Some(&cur_lo));
+                        while count > 0 {
+                            highlights.push(std::mem::take(&mut line_highlight));
+                            acc = 0;
+                            count -= 1;
+                        }
                     } else {
-                        push_trailing(&mut buf, prev_line.as_ref(), &prev_hi, None);
+                        acc = 0;
+                        highlights.push(std::mem::take(&mut line_highlight));
+                        let mut count = push_trailing(&mut buf, prev_line.as_ref(), &prev_hi, None);
+                        while count > 0 {
+                            highlights.push(std::mem::take(&mut line_highlight));
+                            count -= 1;
+                        }
                         // push lines between the previous and current span (if any)
                         for idx in prev_hi.line..(cur_lo.line - 1) {
                             if let Some(line) = sf.get_line(idx) {
                                 buf.push_str(line.as_ref());
                                 buf.push('\n');
+                                highlights.push(std::mem::take(&mut line_highlight));
                             }
                         }
                         if let Some(cur_line) = sf.get_line(cur_lo.line - 1) {
@@ -257,10 +322,46 @@ impl CodeSuggestion {
                             buf.push_str(&cur_line[..end]);
                         }
                     }
+                    // Add a whole line highlight per line in the snippet.
+                    let len: isize = part
+                        .snippet
+                        .split('\n')
+                        .next()
+                        .unwrap_or(&part.snippet)
+                        .chars()
+                        .map(|c| match c {
+                            '\t' => 4,
+                            _ => 1,
+                        })
+                        .sum();
+                    line_highlight.push(SubstitutionHighlight {
+                        start: (cur_lo.col.0 as isize + acc) as usize,
+                        end: (cur_lo.col.0 as isize + acc + len) as usize,
+                    });
                     buf.push_str(&part.snippet);
-                    prev_hi = sm.lookup_char_pos(part.span.hi());
+                    let cur_hi = sm.lookup_char_pos(part.span.hi());
+                    if prev_hi.line == cur_lo.line {
+                        // Account for the difference between the width of the current code and the
+                        // snippet being suggested, so that the *later* suggestions are correctly
+                        // aligned on the screen.
+                        acc += len as isize - (cur_hi.col.0 - cur_lo.col.0) as isize;
+                    }
+                    prev_hi = cur_hi;
                     prev_line = sf.get_line(prev_hi.line - 1);
+                    for line in part.snippet.split('\n').skip(1) {
+                        acc = 0;
+                        highlights.push(std::mem::take(&mut line_highlight));
+                        let end: usize = line
+                            .chars()
+                            .map(|c| match c {
+                                '\t' => 4,
+                                _ => 1,
+                            })
+                            .sum();
+                        line_highlight.push(SubstitutionHighlight { start: 0, end });
+                    }
                 }
+                highlights.push(std::mem::take(&mut line_highlight));
                 let only_capitalization = is_case_difference(sm, &buf, bounding_span);
                 // if the replacement already ends with a newline, don't print the next line
                 if !buf.ends_with('\n') {
@@ -270,7 +371,7 @@ impl CodeSuggestion {
                 while buf.ends_with('\n') {
                     buf.pop();
                 }
-                Some((buf, substitution.parts, only_capitalization))
+                Some((buf, substitution.parts, highlights, only_capitalization))
             })
             .collect()
     }
@@ -342,6 +443,9 @@ struct HandlerInner {
     deduplicated_warn_count: usize,
 
     future_breakage_diagnostics: Vec<Diagnostic>,
+
+    /// If set to `true`, no warning or error will be emitted.
+    quiet: bool,
 }
 
 /// A key denoting where from a diagnostic was stashed.
@@ -456,8 +560,17 @@ impl Handler {
                 emitted_diagnostics: Default::default(),
                 stashed_diagnostics: Default::default(),
                 future_breakage_diagnostics: Vec::new(),
+                quiet: false,
             }),
         }
+    }
+
+    pub fn with_disabled_diagnostic<T, F: FnOnce() -> T>(&self, f: F) -> T {
+        let prev = self.inner.borrow_mut().quiet;
+        self.inner.borrow_mut().quiet = true;
+        let ret = f();
+        self.inner.borrow_mut().quiet = prev;
+        ret
     }
 
     // This is here to not allow mutation of flags;
@@ -818,7 +931,7 @@ impl HandlerInner {
     }
 
     fn emit_diagnostic(&mut self, diagnostic: &Diagnostic) {
-        if diagnostic.cancelled() {
+        if diagnostic.cancelled() || self.quiet {
             return;
         }
 
@@ -916,15 +1029,15 @@ impl HandlerInner {
             let mut error_codes = self
                 .emitted_diagnostic_codes
                 .iter()
-                .filter_map(|x| match &x {
-                    DiagnosticId::Error(s) => {
-                        if let Ok(Some(_explanation)) = registry.try_find_description(s) {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
+                .filter_map(|x| {
+                    match &x {
+                    DiagnosticId::Error(s)
+                        if let Ok(Some(_explanation)) = registry.try_find_description(s) =>
+                    {
+                        Some(s.clone())
                     }
                     _ => None,
+                }
                 })
                 .collect::<Vec<_>>();
             if !error_codes.is_empty() {
@@ -1035,6 +1148,9 @@ impl HandlerInner {
     }
 
     fn delay_as_bug(&mut self, diagnostic: Diagnostic) {
+        if self.quiet {
+            return;
+        }
         if self.flags.report_delayed_bugs {
             self.emit_diagnostic(&diagnostic);
         }

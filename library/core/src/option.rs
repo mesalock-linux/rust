@@ -285,6 +285,19 @@
 //! assert_eq!(res, ["error!", "error!", "foo", "error!", "bar"]);
 //! ```
 //!
+//! ## Comparison operators
+//!
+//! If `T` implements [`PartialOrd`] then [`Option<T>`] will derive its
+//! [`PartialOrd`] implementation.  With this order, [`None`] compares as
+//! less than any [`Some`], and two [`Some`] compare the same way as their
+//! contained values would in `T`.  If `T` also implements
+//! [`Ord`], then so does [`Option<T>`].
+//!
+//! ```
+//! assert!(None < Some(0));
+//! assert!(Some(0) < Some(1));
+//! ```
+//!
 //! ## Iterating over `Option`
 //!
 //! An [`Option`] can be iterated over. This can be helpful if you need an
@@ -1185,11 +1198,8 @@ impl<T> Option<T> {
     pub fn insert(&mut self, value: T) -> &mut T {
         *self = Some(value);
 
-        match self {
-            Some(v) => v,
-            // SAFETY: the code above just filled the option
-            None => unsafe { hint::unreachable_unchecked() },
-        }
+        // SAFETY: the code above just filled the option
+        unsafe { self.as_mut().unwrap_unchecked() }
     }
 
     /// Inserts `value` into the option if it is [`None`], then
@@ -1383,6 +1393,33 @@ impl<T> Option<T> {
         F: FnOnce(T, U) -> R,
     {
         Some(f(self?, other?))
+    }
+}
+
+impl<T, U> Option<(T, U)> {
+    /// Unzips an option containing a tuple of two options
+    ///
+    /// If `self` is `Some((a, b))` this method returns `(Some(a), Some(b))`.
+    /// Otherwise, `(None, None)` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(unzip_option)]
+    ///
+    /// let x = Some((1, "hi"));
+    /// let y = None::<(u8, u32)>;
+    ///
+    /// assert_eq!(x.unzip(), (Some(1), Some("hi")));
+    /// assert_eq!(y.unzip(), (None, None));
+    /// ```
+    #[inline]
+    #[unstable(feature = "unzip_option", issue = "87800", reason = "recently added")]
+    pub const fn unzip(self) -> (Option<T>, Option<U>) {
+        match self {
+            Some((a, b)) => (Some(a), Some(b)),
+            None => (None, None),
+        }
     }
 }
 
@@ -1602,7 +1639,8 @@ impl<T: Clone> Clone for Option<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Default for Option<T> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<T> const Default for Option<T> {
     /// Returns [`None`][Option::None].
     ///
     /// # Examples
@@ -1972,7 +2010,7 @@ impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
 }
 
 #[unstable(feature = "try_trait_v2", issue = "84277")]
-impl<T> ops::TryV2 for Option<T> {
+impl<T> ops::Try for Option<T> {
     type Output = T;
     type Residual = Option<convert::Infallible>;
 

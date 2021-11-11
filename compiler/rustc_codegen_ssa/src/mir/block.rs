@@ -132,14 +132,21 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
     ) {
         // If there is a cleanup block and the function we're calling can unwind, then
         // do an invoke, otherwise do a call.
+        let fn_ty = bx.fn_decl_backend_type(&fn_abi);
         if let Some(cleanup) = cleanup.filter(|_| fn_abi.can_unwind) {
             let ret_llbb = if let Some((_, target)) = destination {
                 fx.llbb(target)
             } else {
                 fx.unreachable_block()
             };
-            let invokeret =
-                bx.invoke(fn_ptr, &llargs, ret_llbb, self.llblock(fx, cleanup), self.funclet(fx));
+            let invokeret = bx.invoke(
+                fn_ty,
+                fn_ptr,
+                &llargs,
+                ret_llbb,
+                self.llblock(fx, cleanup),
+                self.funclet(fx),
+            );
             bx.apply_attrs_callsite(&fn_abi, invokeret);
 
             if let Some((ret_dest, target)) = destination {
@@ -148,7 +155,7 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 fx.store_return(&mut ret_bx, ret_dest, &fn_abi.ret, invokeret);
             }
         } else {
-            let llret = bx.call(fn_ptr, &llargs, self.funclet(fx));
+            let llret = bx.call(fn_ty, fn_ptr, &llargs, self.funclet(fx));
             bx.apply_attrs_callsite(&fn_abi, llret);
             if fx.mir[self.bb].is_cleanup {
                 // Cleanup is always the cold path. Don't inline
@@ -465,10 +472,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             let layout = bx.layout_of(ty);
             let do_panic = match intrinsic {
                 Inhabited => layout.abi.is_uninhabited(),
-                // We unwrap as the error type is `!`.
-                ZeroValid => !layout.might_permit_raw_init(bx, /*zero:*/ true).unwrap(),
-                // We unwrap as the error type is `!`.
-                UninitValid => !layout.might_permit_raw_init(bx, /*zero:*/ false).unwrap(),
+                ZeroValid => !layout.might_permit_raw_init(bx, /*zero:*/ true),
+                UninitValid => !layout.might_permit_raw_init(bx, /*zero:*/ false),
             };
             if do_panic {
                 let msg_str = with_no_trimmed_paths(|| {
@@ -1391,7 +1396,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 LocalRef::UnsizedPlace(_) => bug!("transmute must not involve unsized locals"),
                 LocalRef::Operand(None) => {
                     let dst_layout = bx.layout_of(self.monomorphized_place_ty(dst.as_ref()));
-                    assert!(!dst_layout.ty.has_erasable_regions());
+                    assert!(!dst_layout.ty.has_erasable_regions(self.cx.tcx()));
                     let place = PlaceRef::alloca(bx, dst_layout);
                     place.storage_live(bx);
                     self.codegen_transmute_into(bx, src, place);

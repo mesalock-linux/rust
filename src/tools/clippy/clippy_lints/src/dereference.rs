@@ -11,12 +11,14 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::{symbol::sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for explicit `deref()` or `deref_mut()` method calls.
+    /// ### What it does
+    /// Checks for explicit `deref()` or `deref_mut()` method calls.
     ///
-    /// **Why is this bad?** Dereferencing by `&*x` or `&mut *x` is clearer and more concise,
+    /// ### Why is this bad?
+    /// Dereferencing by `&*x` or `&mut *x` is clearer and more concise,
     /// when not part of a method chain.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// use std::ops::Deref;
     /// let a: &mut String = &mut String::from("foo");
@@ -230,6 +232,7 @@ fn is_linted_explicit_deref_position(parent: Option<Node<'_>>, child_id: HirId, 
         | ExprKind::If(..)
         | ExprKind::Loop(..)
         | ExprKind::Match(..)
+        | ExprKind::Let(..)
         | ExprKind::Closure(..)
         | ExprKind::Block(..)
         | ExprKind::Assign(..)

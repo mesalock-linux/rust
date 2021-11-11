@@ -233,14 +233,12 @@ fn resolve_expr<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, expr: &'tcx h
                 terminating(r.hir_id.local_id);
             }
 
-            hir::ExprKind::If(ref expr, ref then, Some(ref otherwise)) => {
-                terminating(expr.hir_id.local_id);
+            hir::ExprKind::If(_, ref then, Some(ref otherwise)) => {
                 terminating(then.hir_id.local_id);
                 terminating(otherwise.hir_id.local_id);
             }
 
-            hir::ExprKind::If(ref expr, ref then, None) => {
-                terminating(expr.hir_id.local_id);
+            hir::ExprKind::If(_, ref then, None) => {
                 terminating(then.hir_id.local_id);
             }
 
@@ -390,6 +388,25 @@ fn resolve_expr<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, expr: &'tcx h
 
                 yield_data.expr_and_pat_count = new_count;
             }
+        }
+
+        hir::ExprKind::If(ref cond, ref then, Some(ref otherwise)) => {
+            let expr_cx = visitor.cx;
+            visitor.enter_scope(Scope { id: then.hir_id.local_id, data: ScopeData::IfThen });
+            visitor.cx.var_parent = visitor.cx.parent;
+            visitor.visit_expr(cond);
+            visitor.visit_expr(then);
+            visitor.cx = expr_cx;
+            visitor.visit_expr(otherwise);
+        }
+
+        hir::ExprKind::If(ref cond, ref then, None) => {
+            let expr_cx = visitor.cx;
+            visitor.enter_scope(Scope { id: then.hir_id.local_id, data: ScopeData::IfThen });
+            visitor.cx.var_parent = visitor.cx.parent;
+            visitor.visit_expr(cond);
+            visitor.visit_expr(then);
+            visitor.cx = expr_cx;
         }
 
         _ => intravisit::walk_expr(visitor, expr),

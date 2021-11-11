@@ -1,5 +1,6 @@
 use core::cell::Cell;
 use core::cmp::Ordering;
+use core::mem::MaybeUninit;
 use core::result::Result::{Err, Ok};
 
 #[test]
@@ -132,6 +133,48 @@ fn test_partition_point() {
     assert_eq!(b.partition_point(|&x| x < 6), 4);
     assert_eq!(b.partition_point(|&x| x < 7), 4);
     assert_eq!(b.partition_point(|&x| x < 8), 5);
+}
+
+#[test]
+fn test_iterator_advance_by() {
+    let v = &[0, 1, 2, 3, 4];
+
+    for i in 0..=v.len() {
+        let mut iter = v.iter();
+        iter.advance_by(i).unwrap();
+        assert_eq!(iter.as_slice(), &v[i..]);
+    }
+
+    let mut iter = v.iter();
+    assert_eq!(iter.advance_by(v.len() + 1), Err(v.len()));
+    assert_eq!(iter.as_slice(), &[]);
+
+    let mut iter = v.iter();
+    iter.advance_by(3).unwrap();
+    assert_eq!(iter.as_slice(), &v[3..]);
+    iter.advance_by(2).unwrap();
+    assert_eq!(iter.as_slice(), &[]);
+}
+
+#[test]
+fn test_iterator_advance_back_by() {
+    let v = &[0, 1, 2, 3, 4];
+
+    for i in 0..=v.len() {
+        let mut iter = v.iter();
+        iter.advance_back_by(i).unwrap();
+        assert_eq!(iter.as_slice(), &v[..v.len() - i]);
+    }
+
+    let mut iter = v.iter();
+    assert_eq!(iter.advance_back_by(v.len() + 1), Err(v.len()));
+    assert_eq!(iter.as_slice(), &[]);
+
+    let mut iter = v.iter();
+    iter.advance_back_by(3).unwrap();
+    assert_eq!(iter.as_slice(), &v[..v.len() - 3]);
+    iter.advance_back_by(2).unwrap();
+    assert_eq!(iter.as_slice(), &[]);
 }
 
 #[test]
@@ -697,6 +740,10 @@ fn test_array_windows_count() {
     let v3: &[i32] = &[];
     let c3 = v3.array_windows::<2>();
     assert_eq!(c3.count(), 0);
+
+    let v4: &[()] = &[(); usize::MAX];
+    let c4 = v4.array_windows::<1>();
+    assert_eq!(c4.count(), usize::MAX);
 }
 
 #[test]
@@ -1008,6 +1055,10 @@ fn test_windows_count() {
     let v3: &[i32] = &[];
     let c3 = v3.windows(2);
     assert_eq!(c3.count(), 0);
+
+    let v4 = &[(); usize::MAX];
+    let c4 = v4.windows(1);
+    assert_eq!(c4.count(), usize::MAX);
 }
 
 #[test]
@@ -2093,4 +2144,11 @@ fn test_slice_run_destructors() {
     }
 
     assert_eq!(x.get(), 1);
+}
+
+#[test]
+fn test_slice_fill_with_uninit() {
+    // This should not UB. See #87891
+    let mut a = [MaybeUninit::<u8>::uninit(); 10];
+    a.fill(MaybeUninit::uninit());
 }

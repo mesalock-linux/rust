@@ -46,7 +46,7 @@ static_assert_size!(InterpErrorInfo<'_>, 8);
 /// Packages the kind of error we got from the const code interpreter
 /// up with a Rust-level backtrace of where the error occurred.
 /// These should always be constructed by calling `.into()` on
-/// a `InterpError`. In `rustc_mir::interpret`, we have `throw_err_*`
+/// an `InterpError`. In `rustc_mir::interpret`, we have `throw_err_*`
 /// macros for this.
 #[derive(Debug)]
 pub struct InterpErrorInfo<'tcx>(Box<InterpErrorInfoInner<'tcx>>);
@@ -402,10 +402,11 @@ impl fmt::Display for UndefinedBehaviorInfo<'_> {
 pub enum UnsupportedOpInfo {
     /// Free-form case. Only for errors that are never caught!
     Unsupported(String),
-    /// Could not find MIR for a function.
-    NoMirFor(DefId),
     /// Encountered a pointer where we needed raw bytes.
     ReadPointerAsBytes,
+    /// Overwriting parts of a pointer; the resulting state cannot be represented in our
+    /// `Allocation` data structure.
+    PartialPointerOverwrite(Pointer<AllocId>),
     //
     // The variants below are only reachable from CTFE/const prop, miri will never emit them.
     //
@@ -420,10 +421,12 @@ impl fmt::Display for UnsupportedOpInfo {
         use UnsupportedOpInfo::*;
         match self {
             Unsupported(ref msg) => write!(f, "{}", msg),
-            ReadExternStatic(did) => write!(f, "cannot read from extern static ({:?})", did),
-            NoMirFor(did) => write!(f, "no MIR body is available for {:?}", did),
-            ReadPointerAsBytes => write!(f, "unable to turn pointer into raw bytes",),
+            ReadPointerAsBytes => write!(f, "unable to turn pointer into raw bytes"),
+            PartialPointerOverwrite(ptr) => {
+                write!(f, "unable to overwrite parts of a pointer in memory at {:?}", ptr)
+            }
             ThreadLocalStatic(did) => write!(f, "cannot access thread local static ({:?})", did),
+            ReadExternStatic(did) => write!(f, "cannot read from extern static ({:?})", did),
         }
     }
 }

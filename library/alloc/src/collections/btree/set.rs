@@ -59,6 +59,14 @@ use super::Recover;
 ///     println!("{}", book);
 /// }
 /// ```
+///
+/// A `BTreeSet` with a known list of items can be initialized from an array:
+///
+/// ```
+/// use std::collections::BTreeSet;
+///
+/// let set = BTreeSet::from([1, 2, 3]);
+/// ```
 #[derive(Hash, PartialEq, Eq, Ord, PartialOrd)]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "BTreeSet")]
@@ -238,10 +246,7 @@ impl<T> BTreeSet<T> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
-    pub const fn new() -> BTreeSet<T>
-    where
-        T: Ord,
-    {
+    pub const fn new() -> BTreeSet<T> {
         BTreeSet { map: BTreeMap::new() }
     }
 
@@ -1057,6 +1062,20 @@ impl<T: Ord> FromIterator<T> for BTreeSet<T> {
     }
 }
 
+#[stable(feature = "std_collections_from_array", since = "1.56.0")]
+impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// let set1 = BTreeSet::from([1, 2, 3, 4]);
+    /// let set2: BTreeSet<_> = [1, 2, 3, 4].into();
+    /// assert_eq!(set1, set2);
+    /// ```
+    fn from(arr: [T; N]) -> Self {
+        core::array::IntoIter::new(arr).collect()
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> IntoIterator for BTreeSet<T> {
     type Item = T;
@@ -1170,7 +1189,7 @@ impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BTreeSet<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Ord> Default for BTreeSet<T> {
+impl<T> Default for BTreeSet<T> {
     /// Creates an empty `BTreeSet`.
     fn default() -> BTreeSet<T> {
         BTreeSet::new()

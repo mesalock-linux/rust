@@ -933,6 +933,8 @@ impl Step for RustdocGUI {
         let mut command = Command::new(&nodejs);
         command
             .arg(builder.build.src.join("src/tools/rustdoc-gui/tester.js"))
+            .arg("--jobs")
+            .arg(&builder.jobs().to_string())
             .arg("--doc-folder")
             .arg(out_dir.join("doc"))
             .arg("--tests-folder")
@@ -1313,6 +1315,10 @@ note: if you're sure you want to do this, please open an issue as to why. In the
 
         if builder.config.cmd.bless() {
             cmd.arg("--bless");
+        }
+
+        if builder.config.cmd.force_rerun() {
+            cmd.arg("--force-rerun");
         }
 
         let compare_mode =

@@ -484,9 +484,6 @@ pub fn noop_visit_ty<T: MutVisitor>(ty: &mut P<Ty>, vis: &mut T) {
             visit_vec(bounds, |bound| vis.visit_param_bound(bound));
         }
         TyKind::MacCall(mac) => vis.visit_mac_call(mac),
-        TyKind::AnonymousStruct(fields, ..) | TyKind::AnonymousUnion(fields, ..) => {
-            fields.flat_map_in_place(|field| vis.flat_map_field_def(field));
-        }
     }
     vis.visit_span(span);
     visit_lazy_tts(tokens, vis);
@@ -571,11 +568,20 @@ pub fn noop_visit_parenthesized_parameter_data<T: MutVisitor>(
 }
 
 pub fn noop_visit_local<T: MutVisitor>(local: &mut P<Local>, vis: &mut T) {
-    let Local { id, pat, ty, init, span, attrs, tokens } = local.deref_mut();
+    let Local { id, pat, ty, kind, span, attrs, tokens } = local.deref_mut();
     vis.visit_id(id);
     vis.visit_pat(pat);
     visit_opt(ty, |ty| vis.visit_ty(ty));
-    visit_opt(init, |init| vis.visit_expr(init));
+    match kind {
+        LocalKind::Decl => {}
+        LocalKind::Init(init) => {
+            vis.visit_expr(init);
+        }
+        LocalKind::InitElse(init, els) => {
+            vis.visit_expr(init);
+            vis.visit_block(els);
+        }
+    }
     vis.visit_span(span);
     visit_thin_attrs(attrs, vis);
     visit_lazy_tts(tokens, vis);
@@ -940,7 +946,7 @@ pub fn noop_visit_mt<T: MutVisitor>(MutTy { ty, mutbl: _ }: &mut MutTy, vis: &mu
 }
 
 pub fn noop_visit_block<T: MutVisitor>(block: &mut P<Block>, vis: &mut T) {
-    let Block { id, stmts, rules: _, span, tokens } = block.deref_mut();
+    let Block { id, stmts, rules: _, span, tokens, could_be_bare_literal: _ } = block.deref_mut();
     vis.visit_id(id);
     stmts.flat_map_in_place(|stmt| vis.flat_map_stmt(stmt));
     vis.visit_span(span);
@@ -1050,7 +1056,7 @@ pub fn noop_visit_fn_header<T: MutVisitor>(header: &mut FnHeader, vis: &mut T) {
 // FIXME: Avoid visiting the crate as a `Mod` item, flat map only the inner items if possible,
 // or make crate visiting first class if necessary.
 pub fn noop_visit_crate<T: MutVisitor>(krate: &mut Crate, vis: &mut T) {
-    visit_clobber(krate, |Crate { attrs, items, span, proc_macros }| {
+    visit_clobber(krate, |Crate { attrs, items, span }| {
         let item_vis =
             Visibility { kind: VisibilityKind::Public, span: span.shrink_to_lo(), tokens: None };
         let item = P(Item {
@@ -1066,13 +1072,11 @@ pub fn noop_visit_crate<T: MutVisitor>(krate: &mut Crate, vis: &mut T) {
 
         let len = items.len();
         if len == 0 {
-            Crate { attrs: vec![], items: vec![], span, proc_macros }
+            Crate { attrs: vec![], items: vec![], span }
         } else if len == 1 {
             let Item { attrs, span, kind, .. } = items.into_iter().next().unwrap().into_inner();
             match kind {
-                ItemKind::Mod(_, ModKind::Loaded(items, ..)) => {
-                    Crate { attrs, items, span, proc_macros }
-                }
+                ItemKind::Mod(_, ModKind::Loaded(items, ..)) => Crate { attrs, items, span },
                 _ => panic!("visitor converted a module to not a module"),
             }
         } else {
@@ -1179,13 +1183,10 @@ fn noop_visit_inline_asm<T: MutVisitor>(asm: &mut InlineAsm, vis: &mut T) {
     for (op, _) in &mut asm.operands {
         match op {
             InlineAsmOperand::In { expr, .. }
+            | InlineAsmOperand::Out { expr: Some(expr), .. }
             | InlineAsmOperand::InOut { expr, .. }
             | InlineAsmOperand::Sym { expr, .. } => vis.visit_expr(expr),
-            InlineAsmOperand::Out { expr, .. } => {
-                if let Some(expr) = expr {
-                    vis.visit_expr(expr);
-                }
-            }
+            InlineAsmOperand::Out { expr: None, .. } => {}
             InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
                 vis.visit_expr(in_expr);
                 if let Some(out_expr) = out_expr {
@@ -1237,7 +1238,7 @@ pub fn noop_visit_expr<T: MutVisitor>(
             vis.visit_ty(ty);
         }
         ExprKind::AddrOf(_, _, ohs) => vis.visit_expr(ohs),
-        ExprKind::Let(pat, scrutinee) => {
+        ExprKind::Let(pat, scrutinee, _) => {
             vis.visit_pat(pat);
             vis.visit_expr(scrutinee);
         }
@@ -1374,7 +1375,17 @@ pub fn noop_flat_map_stmt<T: MutVisitor>(
 ) -> SmallVec<[Stmt; 1]> {
     vis.visit_id(&mut id);
     vis.visit_span(&mut span);
-    noop_flat_map_stmt_kind(kind, vis).into_iter().map(|kind| Stmt { id, kind, span }).collect()
+    let stmts: SmallVec<_> = noop_flat_map_stmt_kind(kind, vis)
+        .into_iter()
+        .map(|kind| Stmt { id, kind, span })
+        .collect();
+    if stmts.len() > 1 {
+        panic!(
+            "cloning statement `NodeId`s is prohibited by default, \
+             the visitor should implement custom statement visiting"
+        );
+    }
+    stmts
 }
 
 pub fn noop_flat_map_stmt_kind<T: MutVisitor>(

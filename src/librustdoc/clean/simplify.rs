@@ -116,10 +116,10 @@ crate fn merge_bounds(
                 });
             }
             PP::Parenthesized { ref mut output, .. } => match output {
-                Some(o) => assert_eq!(o, rhs),
+                Some(o) => assert_eq!(o.as_ref(), rhs),
                 None => {
                     if *rhs != clean::Type::Tuple(Vec::new()) {
-                        *output = Some(rhs.clone());
+                        *output = Some(Box::new(rhs.clone()));
                     }
                 }
             },
@@ -139,7 +139,7 @@ fn trait_is_same_or_supertrait(cx: &DocContext<'_>, child: DefId, trait_: DefId)
         .predicates
         .iter()
         .filter_map(|(pred, _)| {
-            if let ty::PredicateKind::Trait(pred, _) = pred.kind().skip_binder() {
+            if let ty::PredicateKind::Trait(pred) = pred.kind().skip_binder() {
                 if pred.trait_ref.self_ty() == self_ty { Some(pred.def_id()) } else { None }
             } else {
                 None

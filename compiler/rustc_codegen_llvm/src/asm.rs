@@ -302,11 +302,19 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                         "~{flags}".to_string(),
                     ]);
                 }
-                InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => {}
+                InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => {
+                    constraints.extend_from_slice(&[
+                        "~{vtype}".to_string(),
+                        "~{vl}".to_string(),
+                        "~{vxsat}".to_string(),
+                        "~{vxrm}".to_string(),
+                    ]);
+                }
                 InlineAsmArch::Nvptx64 => {}
                 InlineAsmArch::PowerPC | InlineAsmArch::PowerPC64 => {}
                 InlineAsmArch::Hexagon => {}
                 InlineAsmArch::Mips | InlineAsmArch::Mips64 => {}
+                InlineAsmArch::S390x => {}
                 InlineAsmArch::SpirV => {}
                 InlineAsmArch::Wasm32 => {}
                 InlineAsmArch::Bpf => {}
@@ -425,7 +433,7 @@ impl AsmMethods for CodegenCx<'ll, 'tcx> {
     }
 }
 
-fn inline_asm_call(
+pub(crate) fn inline_asm_call(
     bx: &mut Builder<'a, 'll, 'tcx>,
     asm: &str,
     cons: &str,
@@ -464,7 +472,7 @@ fn inline_asm_call(
                 alignstack,
                 llvm::AsmDialect::from_generic(dia),
             );
-            let call = bx.call(v, inputs, None);
+            let call = bx.call(fty, v, inputs, None);
 
             // Store mark in a metadata node so we can map LLVM errors
             // back to source locations.  See #17552.
@@ -608,6 +616,10 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'tcx>>) 
             InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::reg) => "r",
             InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::reg_nonzero) => "b",
             InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::freg) => "f",
+            InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::cr)
+            | InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::xer) => {
+                unreachable!("clobber-only")
+            }
             InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::reg) => "r",
             InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::freg) => "f",
             InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::vreg) => {
@@ -626,6 +638,8 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'tcx>>) 
             InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => "r",
             InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::reg) => "r",
             InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::wreg) => "w",
+            InlineAsmRegClass::S390x(S390xInlineAsmRegClass::reg) => "r",
+            InlineAsmRegClass::S390x(S390xInlineAsmRegClass::freg) => "f",
             InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
                 bug!("LLVM backend does not support SPIR-V")
             }
@@ -704,6 +718,7 @@ fn modifier_to_llvm(
         }
         InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => None,
         InlineAsmRegClass::Bpf(_) => None,
+        InlineAsmRegClass::S390x(_) => None,
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
         }
@@ -744,6 +759,10 @@ fn dummy_output_type(cx: &CodegenCx<'ll, 'tcx>, reg: InlineAsmRegClass) -> &'ll 
         InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::reg) => cx.type_i32(),
         InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::reg_nonzero) => cx.type_i32(),
         InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::freg) => cx.type_f64(),
+        InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::cr)
+        | InlineAsmRegClass::PowerPC(PowerPCInlineAsmRegClass::xer) => {
+            unreachable!("clobber-only")
+        }
         InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::reg) => cx.type_i32(),
         InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::freg) => cx.type_f32(),
         InlineAsmRegClass::RiscV(RiscVInlineAsmRegClass::vreg) => {
@@ -762,6 +781,8 @@ fn dummy_output_type(cx: &CodegenCx<'ll, 'tcx>, reg: InlineAsmRegClass) -> &'ll 
         InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => cx.type_i32(),
         InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::reg) => cx.type_i64(),
         InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::wreg) => cx.type_i32(),
+        InlineAsmRegClass::S390x(S390xInlineAsmRegClass::reg) => cx.type_i32(),
+        InlineAsmRegClass::S390x(S390xInlineAsmRegClass::freg) => cx.type_f64(),
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
         }

@@ -130,7 +130,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
     fn write_ty_to_typeck_results(&mut self, hir_id: hir::HirId, ty: Ty<'tcx>) {
         debug!("write_ty_to_typeck_results({:?}, {:?})", hir_id, ty);
-        assert!(!ty.needs_infer() && !ty.has_placeholders() && !ty.has_free_regions());
+        assert!(!ty.needs_infer() && !ty.has_placeholders() && !ty.has_free_regions(self.tcx()));
         self.typeck_results.node_types_mut().insert(hir_id, ty);
     }
 
@@ -175,10 +175,10 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                                 }
                             }
                         }
-                        hir::ExprKind::AssignOp(..) => {
-                            if let Some(a) = typeck_results.adjustments_mut().get_mut(lhs.hir_id) {
-                                a.pop();
-                            }
+                        hir::ExprKind::AssignOp(..)
+                            if let Some(a) = typeck_results.adjustments_mut().get_mut(lhs.hir_id) =>
+                        {
+                            a.pop();
                         }
                         _ => {}
                     }
@@ -330,6 +330,15 @@ impl<'cx, 'tcx> Visitor<'tcx> for WritebackCx<'cx, 'tcx> {
         let ty = self.fcx.node_ty(hir_ty.hir_id);
         let ty = self.resolve(ty, &hir_ty.span);
         self.write_ty_to_typeck_results(hir_ty.hir_id, ty);
+    }
+
+    fn visit_infer(&mut self, inf: &'tcx hir::InferArg) {
+        intravisit::walk_inf(self, inf);
+        // Ignore cases where the inference is a const.
+        if let Some(ty) = self.fcx.node_ty_opt(inf.hir_id) {
+            let ty = self.resolve(ty, &inf.span);
+            self.write_ty_to_typeck_results(inf.hir_id, ty);
+        }
     }
 }
 
@@ -489,7 +498,8 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
     }
 
     fn visit_opaque_types(&mut self, span: Span) {
-        for &(opaque_type_key, opaque_defn) in self.fcx.opaque_types.borrow().iter() {
+        let opaque_types = self.fcx.infcx.inner.borrow().opaque_types.clone();
+        for (opaque_type_key, opaque_defn) in opaque_types {
             let hir_id =
                 self.tcx().hir().local_def_id_to_hir_id(opaque_type_key.def_id.expect_local());
             let instantiated_ty = self.resolve(opaque_defn.concrete_ty, &hir_id);
@@ -542,23 +552,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             // in some other location, or we'll end up emitting an error due
             // to the lack of defining usage
             if !skip_add {
-                let old_concrete_ty = self
-                    .typeck_results
-                    .concrete_opaque_types
-                    .insert(opaque_type_key, definition_ty);
-                if let Some(old_concrete_ty) = old_concrete_ty {
-                    if old_concrete_ty != definition_ty {
-                        span_bug!(
-                            span,
-                            "`visit_opaque_types` tried to write different types for the same \
-                                 opaque type: {:?}, {:?}, {:?}, {:?}",
-                            opaque_type_key.def_id,
-                            definition_ty,
-                            opaque_defn,
-                            old_concrete_ty,
-                        );
-                    }
-                }
+                self.typeck_results.concrete_opaque_types.insert(opaque_type_key.def_id);
             }
         }
     }

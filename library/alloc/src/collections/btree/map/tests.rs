@@ -1745,7 +1745,7 @@ fn test_send() {
     }
 }
 
-#[allow(dead_code)]
+#[test]
 fn test_ord_absence() {
     fn map<K>(mut map: BTreeMap<K, ()>) {
         map.is_empty();
@@ -1784,13 +1784,12 @@ fn test_ord_absence() {
     fn map_clone<K: Clone>(mut map: BTreeMap<K, ()>) {
         map.clone_from(&map.clone());
     }
-}
 
-#[allow(dead_code)]
-fn test_const() {
-    const MAP: &'static BTreeMap<(), ()> = &BTreeMap::new();
-    const LEN: usize = MAP.len();
-    const IS_EMPTY: bool = MAP.is_empty();
+    #[derive(Debug, Clone)]
+    struct NonOrd;
+    map(BTreeMap::<NonOrd, _>::new());
+    map_debug(BTreeMap::<NonOrd, _>::new());
+    map_clone(BTreeMap::<NonOrd, _>::default());
 }
 
 #[test]
@@ -2172,4 +2171,11 @@ fn test_insert_remove_intertwined_ord_chaos() {
         gov.flip();
     }
     map.check_invariants();
+}
+
+#[test]
+fn from_array() {
+    let map = BTreeMap::from([(1, 2), (3, 4)]);
+    let unordered_duplicates = BTreeMap::from([(3, 4), (1, 2), (1, 2)]);
+    assert_eq!(map, unordered_duplicates);
 }

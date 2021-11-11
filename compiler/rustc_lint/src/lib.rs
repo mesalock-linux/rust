@@ -29,9 +29,9 @@
 #![cfg_attr(test, feature(test))]
 #![feature(array_windows)]
 #![feature(bool_to_option)]
-#![feature(box_syntax)]
 #![feature(box_patterns)]
 #![feature(crate_visibility_modifier)]
+#![feature(format_args_capture)]
 #![feature(iter_order_by)]
 #![feature(iter_zip)]
 #![feature(never_type)]
@@ -48,6 +48,7 @@ mod array_into_iter;
 pub mod builtin;
 mod context;
 mod early;
+pub mod hidden_unicode_codepoints;
 mod internal;
 mod late;
 mod levels;
@@ -62,6 +63,8 @@ mod traits;
 mod types;
 mod unused;
 
+pub use array_into_iter::ARRAY_INTO_ITER;
+
 use rustc_ast as ast;
 use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
@@ -75,6 +78,7 @@ use rustc_span::Span;
 
 use array_into_iter::ArrayIntoIter;
 use builtin::*;
+use hidden_unicode_codepoints::*;
 use internal::*;
 use methods::*;
 use non_ascii_idents::*;
@@ -126,6 +130,7 @@ macro_rules! early_lint_passes {
                 DeprecatedAttr: DeprecatedAttr::new(),
                 WhileTrue: WhileTrue,
                 NonAsciiIdents: NonAsciiIdents,
+                HiddenUnicodeCodepoints: HiddenUnicodeCodepoints,
                 IncompleteFeatures: IncompleteFeatures,
                 RedundantSemicolons: RedundantSemicolons,
                 UnusedDocComment: UnusedDocComment,
@@ -151,8 +156,6 @@ macro_rules! late_lint_passes {
                 // FIXME: Look into regression when this is used as a module lint
                 // May Depend on constants elsewhere
                 UnusedBrokenConst: UnusedBrokenConst,
-                // Uses attr::is_used which is untracked, can't be an incremental module pass.
-                UnusedAttributes: UnusedAttributes::new(),
                 // Needs to run after UnusedAttributes as it marks all `feature` attributes as used.
                 UnstableFeatures: UnstableFeatures,
                 // Tracks state across modules
@@ -169,6 +172,8 @@ macro_rules! late_lint_passes {
                 TemporaryCStringAsPtr: TemporaryCStringAsPtr,
                 NonPanicFmt: NonPanicFmt,
                 NoopMethodCall: NoopMethodCall,
+                InvalidAtomicOrdering: InvalidAtomicOrdering,
+                NamedAsmLabels: NamedAsmLabels,
             ]
         );
     };
@@ -244,7 +249,7 @@ fn register_builtins(store: &mut LintStore, no_interleave_lints: bool) {
     macro_rules! register_pass {
         ($method:ident, $ty:ident, $constructor:expr) => {
             store.register_lints(&$ty::get_lints());
-            store.$method(|| box $constructor);
+            store.$method(|| Box::new($constructor));
         };
     }
 
@@ -476,13 +481,13 @@ fn register_builtins(store: &mut LintStore, no_interleave_lints: bool) {
 
 fn register_internals(store: &mut LintStore) {
     store.register_lints(&LintPassImpl::get_lints());
-    store.register_early_pass(|| box LintPassImpl);
+    store.register_early_pass(|| Box::new(LintPassImpl));
     store.register_lints(&DefaultHashTypes::get_lints());
-    store.register_late_pass(|| box DefaultHashTypes);
+    store.register_late_pass(|| Box::new(DefaultHashTypes));
     store.register_lints(&ExistingDocKeyword::get_lints());
-    store.register_late_pass(|| box ExistingDocKeyword);
+    store.register_late_pass(|| Box::new(ExistingDocKeyword));
     store.register_lints(&TyTyKind::get_lints());
-    store.register_late_pass(|| box TyTyKind);
+    store.register_late_pass(|| Box::new(TyTyKind));
     store.register_group(
         false,
         "rustc::internal",

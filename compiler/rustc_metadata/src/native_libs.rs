@@ -44,8 +44,7 @@ impl ItemLikeVisitor<'tcx> for Collector<'tcx> {
 
         // Process all of the #[link(..)]-style arguments
         let sess = &self.tcx.sess;
-        for m in self.tcx.hir().attrs(it.hir_id()).iter().filter(|a| sess.check_name(a, sym::link))
-        {
+        for m in self.tcx.hir().attrs(it.hir_id()).iter().filter(|a| a.has_name(sym::link)) {
             let items = match m.meta_item_list() {
                 Some(item) => item,
                 None => continue,
@@ -77,6 +76,15 @@ impl ItemLikeVisitor<'tcx> for Collector<'tcx> {
                                 modifier `-bundle` with library kind `static`",
                             )
                             .emit();
+                            if !self.tcx.features().static_nobundle {
+                                feature_err(
+                                    &self.tcx.sess.parse_sess,
+                                    sym::static_nobundle,
+                                    item.span(),
+                                    "kind=\"static-nobundle\" is unstable",
+                                )
+                                .emit();
+                            }
                             NativeLibKind::Static { bundle: Some(false), whole_archive: None }
                         }
                         "dylib" => NativeLibKind::Dylib { as_needed: None },
@@ -249,17 +257,6 @@ impl Collector<'tcx> {
                 sym::link_cfg,
                 span.unwrap(),
                 "kind=\"link_cfg\" is unstable",
-            )
-            .emit();
-        }
-        if matches!(lib.kind, NativeLibKind::Static { bundle: Some(false), .. })
-            && !self.tcx.features().static_nobundle
-        {
-            feature_err(
-                &self.tcx.sess.parse_sess,
-                sym::static_nobundle,
-                span.unwrap_or(rustc_span::DUMMY_SP),
-                "kind=\"static-nobundle\" is unstable",
             )
             .emit();
         }

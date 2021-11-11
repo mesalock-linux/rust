@@ -34,6 +34,11 @@ RUN apt-get update && \
       xz-utils \
       zlib1g-dev
 
+# Install new Let's Encrypt root CA certificate and remove the expired one.
+COPY host-x86_64/shared/ISRG_Root_X1.crt /usr/local/share/ca-certificates/ISRG_Root_X1.crt
+RUN sed -i '/mozilla\/DST_Root_CA_X3\.crt/d' /etc/ca-certificates.conf
+RUN /usr/sbin/update-ca-certificates
+
 ENV PATH=/rustroot/bin:$PATH
 ENV LD_LIBRARY_PATH=/rustroot/lib64:/rustroot/lib32:/rustroot/lib
 ENV PKG_CONFIG_PATH=/rustroot/lib/pkgconfig
@@ -81,6 +86,12 @@ RUN ./build-cmake.sh
 COPY host-x86_64/dist-x86_64-linux/build-clang.sh /tmp/
 RUN ./build-clang.sh
 ENV CC=clang CXX=clang++
+
+ENV PERF_COMMIT 1e19fc4c6168d2f7596e512f42f358f245d8f09d
+RUN curl -LS -o perf.zip https://github.com/rust-lang/rustc-perf/archive/$PERF_COMMIT.zip && \
+    unzip perf.zip && \
+    mv rustc-perf-$PERF_COMMIT rustc-perf && \
+    rm perf.zip
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh

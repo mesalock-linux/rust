@@ -10,7 +10,7 @@ use crate::middle;
 use crate::middle::cstore::EncodedMetadata;
 use crate::middle::resolve_lifetime::{self, LifetimeScopeForPath, ObjectLifetimeDefault};
 use crate::middle::stability;
-use crate::mir::interpret::{self, AllocId, Allocation, ConstValue, Scalar};
+use crate::mir::interpret::{self, Allocation, ConstValue, Scalar};
 use crate::mir::{Body, Field, Local, Place, PlaceElem, ProjectionKind, Promoted};
 use crate::thir::Thir;
 use crate::traits;
@@ -32,7 +32,6 @@ use rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{self, Lock, Lrc, WorkerLocal};
-use rustc_data_structures::vec_map::VecMap;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
@@ -46,7 +45,6 @@ use rustc_hir::{
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_macros::HashStable;
 use rustc_middle::mir::FakeReadCause;
-use rustc_middle::ty::OpaqueTypeKey;
 use rustc_serialize::opaque::{FileEncodeResult, FileEncoder};
 use rustc_session::config::{BorrowckMode, CrateType, OutputFilenames};
 use rustc_session::lint::{Level, Lint};
@@ -477,7 +475,7 @@ pub struct TypeckResults<'tcx> {
 
     /// All the opaque types that are restricted to concrete types
     /// by this function.
-    pub concrete_opaque_types: VecMap<OpaqueTypeKey<'tcx>, Ty<'tcx>>,
+    pub concrete_opaque_types: FxHashSet<DefId>,
 
     /// Tracks the minimum captures required for a closure;
     /// see `MinCaptureInformationMap` for more details.
@@ -1064,9 +1062,6 @@ pub struct GlobalCtxt<'tcx> {
     layout_interner: ShardedHashMap<&'tcx Layout, ()>,
 
     output_filenames: Arc<OutputFilenames>,
-
-    pub(super) vtables_cache:
-        Lock<FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), AllocId>>,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -1138,7 +1133,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn layout_scalar_valid_range(self, def_id: DefId) -> (Bound<u128>, Bound<u128>) {
         let attrs = self.get_attrs(def_id);
         let get = |name| {
-            let attr = match attrs.iter().find(|a| self.sess.check_name(a, name)) {
+            let attr = match attrs.iter().find(|a| a.has_name(name)) {
                 Some(attr) => attr,
                 None => return Bound::Unbounded,
             };
@@ -1214,7 +1209,6 @@ impl<'tcx> TyCtxt<'tcx> {
             const_stability_interner: Default::default(),
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames),
-            vtables_cache: Default::default(),
         }
     }
 
@@ -1422,8 +1416,8 @@ impl<'tcx> TyCtxt<'tcx> {
     #[inline]
     pub fn lazy_normalization(self) -> bool {
         let features = self.features();
-        // Note: We do not enable lazy normalization for `min_const_generics`.
-        features.const_generics || features.lazy_normalization_consts
+        // Note: We only use lazy normalization for generic const expressions.
+        features.generic_const_exprs
     }
 
     #[inline]
@@ -1794,7 +1788,7 @@ pub mod tls {
         if context == 0 {
             f(None)
         } else {
-            // We could get a `ImplicitCtxt` pointer from another thread.
+            // We could get an `ImplicitCtxt` pointer from another thread.
             // Ensure that `ImplicitCtxt` is `Sync`.
             sync::assert_sync::<ImplicitCtxt<'_, '_>>();
 
@@ -2171,7 +2165,7 @@ impl<'tcx> TyCtxt<'tcx> {
             let generic_predicates = self.super_predicates_of(trait_did);
 
             for (predicate, _) in generic_predicates.predicates {
-                if let ty::PredicateKind::Trait(data, _) = predicate.kind().skip_binder() {
+                if let ty::PredicateKind::Trait(data) = predicate.kind().skip_binder() {
                     if set.insert(data.def_id()) {
                         stack.push(data.def_id());
                     }
@@ -2854,18 +2848,11 @@ pub fn provide(providers: &mut ty::query::Providers) {
         tcx.arena.alloc(tcx.resolutions(()).glob_map.get(&id).cloned().unwrap_or_default())
     };
 
-    providers.lookup_stability = |tcx, id| {
-        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
-        tcx.stability().local_stability(id)
-    };
-    providers.lookup_const_stability = |tcx, id| {
-        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
-        tcx.stability().local_const_stability(id)
-    };
-    providers.lookup_deprecation_entry = |tcx, id| {
-        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
-        tcx.stability().local_deprecation_entry(id)
-    };
+    providers.lookup_stability = |tcx, id| tcx.stability().local_stability(id.expect_local());
+    providers.lookup_const_stability =
+        |tcx, id| tcx.stability().local_const_stability(id.expect_local());
+    providers.lookup_deprecation_entry =
+        |tcx, id| tcx.stability().local_deprecation_entry(id.expect_local());
     providers.extern_mod_stmt_cnum =
         |tcx, id| tcx.resolutions(()).extern_crate_map.get(&id).cloned();
     providers.output_filenames = |tcx, ()| tcx.output_filenames.clone();

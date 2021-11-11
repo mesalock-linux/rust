@@ -490,6 +490,7 @@ pub enum DiagnosticKind {
     PGOProfile,
     Linker,
     Unsupported,
+    SrcMgr,
 }
 
 /// LLVMRustDiagnosticLevel
@@ -1011,7 +1012,8 @@ extern "C" {
     pub fn LLVMConstVector(ScalarConstantVals: *const &Value, Size: c_uint) -> &Value;
 
     // Constant expressions
-    pub fn LLVMConstInBoundsGEP(
+    pub fn LLVMRustConstInBoundsGEP2(
+        ty: &'a Type,
         ConstantVal: &'a Value,
         ConstantIndices: *const &'a Value,
         NumIndices: c_uint,
@@ -1154,6 +1156,7 @@ extern "C" {
     ) -> &'a Value;
     pub fn LLVMRustBuildInvoke(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Fn: &'a Value,
         Args: *const &'a Value,
         NumArgs: c_uint,
@@ -1394,22 +1397,25 @@ extern "C" {
 
     pub fn LLVMBuildStore(B: &Builder<'a>, Val: &'a Value, Ptr: &'a Value) -> &'a Value;
 
-    pub fn LLVMBuildGEP(
+    pub fn LLVMBuildGEP2(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Pointer: &'a Value,
         Indices: *const &'a Value,
         NumIndices: c_uint,
         Name: *const c_char,
     ) -> &'a Value;
-    pub fn LLVMBuildInBoundsGEP(
+    pub fn LLVMBuildInBoundsGEP2(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Pointer: &'a Value,
         Indices: *const &'a Value,
         NumIndices: c_uint,
         Name: *const c_char,
     ) -> &'a Value;
-    pub fn LLVMBuildStructGEP(
+    pub fn LLVMBuildStructGEP2(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Pointer: &'a Value,
         Idx: c_uint,
         Name: *const c_char,
@@ -1522,6 +1528,7 @@ extern "C" {
     pub fn LLVMRustGetInstrProfIncrementIntrinsic(M: &Module) -> &'a Value;
     pub fn LLVMRustBuildCall(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Fn: &'a Value,
         Args: *const &'a Value,
         NumArgs: c_uint,
@@ -2258,12 +2265,16 @@ extern "C" {
         level_out: &mut DiagnosticLevel,
         cookie_out: &mut c_uint,
         message_out: &mut Option<&'a Twine>,
-        instruction_out: &mut Option<&'a Value>,
     );
 
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteDiagnosticInfoToString(DI: &DiagnosticInfo, s: &RustString);
     pub fn LLVMRustGetDiagInfoKind(DI: &DiagnosticInfo) -> DiagnosticKind;
+
+    pub fn LLVMRustGetSMDiagnostic(
+        DI: &'a DiagnosticInfo,
+        cookie_out: &mut c_uint,
+    ) -> &'a SMDiagnostic;
 
     pub fn LLVMRustSetInlineAsmDiagnosticHandler(
         C: &Context,

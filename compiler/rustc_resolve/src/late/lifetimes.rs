@@ -740,6 +740,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
 
             hir::ItemKind::ExternCrate(_)
             | hir::ItemKind::Use(..)
+            | hir::ItemKind::Macro(..)
             | hir::ItemKind::Mod(..)
             | hir::ItemKind::ForeignMod { .. }
             | hir::ItemKind::GlobalAsm(..) => {
@@ -1015,24 +1016,17 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                                 let hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
                                 // Ensure that the parent of the def is an item, not HRTB
                                 let parent_id = self.tcx.hir().get_parent_node(hir_id);
-                                let parent_is_item = if let Some(parent_def_id) =
-                                    parent_id.as_owner()
-                                {
-                                    let parent_item_id = hir::ItemId { def_id: parent_def_id };
-                                    let parent_impl_id = hir::ImplItemId { def_id: parent_def_id };
-                                    let parent_trait_id =
-                                        hir::TraitItemId { def_id: parent_def_id };
-                                    let parent_foreign_id =
-                                        hir::ForeignItemId { def_id: parent_def_id };
-                                    let krate = self.tcx.hir().krate();
-
-                                    krate.items.contains_key(&parent_item_id)
-                                        || krate.impl_items.contains_key(&parent_impl_id)
-                                        || krate.trait_items.contains_key(&parent_trait_id)
-                                        || krate.foreign_items.contains_key(&parent_foreign_id)
-                                } else {
-                                    false
-                                };
+                                // FIXME(cjgillot) Can this check be replaced by
+                                // `let parent_is_item = parent_id.is_owner();`?
+                                let parent_is_item =
+                                    if let Some(parent_def_id) = parent_id.as_owner() {
+                                        matches!(
+                                            self.tcx.hir().krate().owners.get(parent_def_id),
+                                            Some(Some(_)),
+                                        )
+                                    } else {
+                                        false
+                                    };
 
                                 if !parent_is_item {
                                     if !self.trait_definition_only {
@@ -2064,9 +2058,13 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                             if let Some(def_id) = parent_def_id.as_local() {
                                 let parent_hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
                                 // lifetimes in `derive` expansions don't count (Issue #53738)
-                                if self.tcx.hir().attrs(parent_hir_id).iter().any(|attr| {
-                                    self.tcx.sess.check_name(attr, sym::automatically_derived)
-                                }) {
+                                if self
+                                    .tcx
+                                    .hir()
+                                    .attrs(parent_hir_id)
+                                    .iter()
+                                    .any(|attr| attr.has_name(sym::automatically_derived))
+                                {
                                     continue;
                                 }
                             }
@@ -2303,7 +2301,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             match *scope {
                 Scope::Body { id, s } => {
                     // Non-static lifetimes are prohibited in anonymous constants without
-                    // `const_generics`.
+                    // `generic_const_exprs`.
                     self.maybe_emit_forbidden_non_static_lifetime_error(id, lifetime_ref);
 
                     outermost_body = Some(id);
@@ -2557,6 +2555,12 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 GenericArg::Const(ct) => {
                     self.visit_anon_const(&ct.value);
                 }
+                GenericArg::Infer(inf) => {
+                    self.visit_id(inf.hir_id);
+                    if inf.kind.is_type() {
+                        i += 1;
+                    }
+                }
             }
         }
 
@@ -2601,8 +2605,10 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                     binding.ident,
                 );
                 self.with(scope, |_, this| {
-                    let scope =
-                        Scope::Supertrait { lifetimes: lifetimes.unwrap_or(vec![]), s: this.scope };
+                    let scope = Scope::Supertrait {
+                        lifetimes: lifetimes.unwrap_or_default(),
+                        s: this.scope,
+                    };
                     this.with(scope, |_, this| this.visit_assoc_type_binding(binding));
                 });
             } else {
@@ -2658,7 +2664,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             let obligations = predicates.predicates.iter().filter_map(|&(pred, _)| {
                 let bound_predicate = pred.kind();
                 match bound_predicate.skip_binder() {
-                    ty::PredicateKind::Trait(data, _) => {
+                    ty::PredicateKind::Trait(data) => {
                         // The order here needs to match what we would get from `subst_supertrait`
                         let pred_bound_vars = bound_predicate.bound_vars();
                         let mut all_bound_vars = bound_vars.clone();
@@ -2688,15 +2694,14 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 Scope::Binder { hir_id, .. } => {
                     break *hir_id;
                 }
-                Scope::Body { id, .. } => break id.hir_id,
                 Scope::ObjectLifetimeDefault { ref s, .. }
                 | Scope::Elision { ref s, .. }
                 | Scope::Supertrait { ref s, .. }
                 | Scope::TraitRefBoundary { ref s, .. } => {
                     scope = *s;
                 }
-                Scope::Root => {
-                    // See issue #83907. Just bail out from looking inside.
+                Scope::Root | Scope::Body { .. } => {
+                    // See issues #83907 and #83693. Just bail out from looking inside.
                     self.tcx.sess.delay_span_bug(
                         rustc_span::DUMMY_SP,
                         "In fn_like_elision without appropriate scope above",

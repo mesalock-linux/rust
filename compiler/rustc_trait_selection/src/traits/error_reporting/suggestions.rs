@@ -290,13 +290,9 @@ fn suggest_restriction(
     } else {
         // Trivial case: `T` needs an extra bound: `T: Bound`.
         let (sp, suggestion) = match (
-            generics
-                .params
-                .iter()
-                .filter(|p| {
-                    !matches!(p.kind, hir::GenericParamKind::Type { synthetic: Some(_), .. })
-                })
-                .next(),
+            generics.params.iter().find(|p| {
+                !matches!(p.kind, hir::GenericParamKind::Type { synthetic: Some(_), .. })
+            }),
             super_traits,
         ) {
             (_, None) => predicate_constraint(
@@ -1163,15 +1159,18 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             if is_object_safe {
                 // Suggest `-> Box<dyn Trait>` and `Box::new(returned_value)`.
                 // Get all the return values and collect their span and suggestion.
-                if let Some(mut suggestions) = visitor
+                let mut suggestions: Vec<_> = visitor
                     .returns
                     .iter()
-                    .map(|expr| {
-                        let snip = sm.span_to_snippet(expr.span).ok()?;
-                        Some((expr.span, format!("Box::new({})", snip)))
+                    .flat_map(|expr| {
+                        vec![
+                            (expr.span.shrink_to_lo(), "Box::new(".to_string()),
+                            (expr.span.shrink_to_hi(), ")".to_string()),
+                        ]
+                        .into_iter()
                     })
-                    .collect::<Option<Vec<_>>>()
-                {
+                    .collect();
+                if !suggestions.is_empty() {
                     // Add the suggestion for the return type.
                     suggestions.push((ret_ty.span, format!("Box<dyn {}>", trait_obj)));
                     err.multipart_suggestion(
@@ -1366,7 +1365,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         // When a future does not implement a trait because of a captured type in one of the
         // generators somewhere in the call stack, then the result is a chain of obligations.
         //
-        // Given a `async fn` A that calls a `async fn` B which captures a non-send type and that
+        // Given an `async fn` A that calls an `async fn` B which captures a non-send type and that
         // future is passed as an argument to a function C which requires a `Send` type, then the
         // chain looks something like this:
         //
@@ -1387,7 +1386,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         // bound was introduced. At least one generator should be present for this diagnostic to be
         // modified.
         let (mut trait_ref, mut target_ty) = match obligation.predicate.kind().skip_binder() {
-            ty::PredicateKind::Trait(p, _) => (Some(p.trait_ref), Some(p.self_ty())),
+            ty::PredicateKind::Trait(p) => (Some(p.trait_ref), Some(p.self_ty())),
             _ => (None, None),
         };
         let mut generator = None;
@@ -1929,7 +1928,11 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             | ObligationCauseCode::OpaqueType
             | ObligationCauseCode::MiscObligation
             | ObligationCauseCode::WellFormed(..)
-            | ObligationCauseCode::MatchImpl(..) => {}
+            | ObligationCauseCode::MatchImpl(..)
+            | ObligationCauseCode::ReturnType
+            | ObligationCauseCode::ReturnValue(_)
+            | ObligationCauseCode::BlockTailExpression(_)
+            | ObligationCauseCode::LetElse => {}
             ObligationCauseCode::SliceOrArrayElem => {
                 err.note("slice and array elements must have `Sized` type");
             }
@@ -1963,7 +1966,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             }
             ObligationCauseCode::BindingObligation(item_def_id, span) => {
                 let item_name = tcx.def_path_str(item_def_id);
-                let msg = format!("required by this bound in `{}`", item_name);
+                let mut multispan = MultiSpan::from(span);
                 if let Some(ident) = tcx.opt_item_name(item_def_id) {
                     let sm = tcx.sess.source_map();
                     let same_line =
@@ -1972,16 +1975,17 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                             _ => true,
                         };
                     if !ident.span.overlaps(span) && !same_line {
-                        err.span_label(ident.span, "required by a bound in this");
+                        multispan
+                            .push_span_label(ident.span, "required by a bound in this".to_string());
                     }
                 }
+                let descr = format!("required by a bound in `{}`", item_name);
                 if span != DUMMY_SP {
-                    err.span_label(span, &msg);
+                    let msg = format!("required by this bound in `{}`", item_name);
+                    multispan.push_span_label(span, msg);
+                    err.span_note(multispan, &descr);
                 } else {
-                    err.span_note(
-                        tcx.def_span(item_def_id),
-                        &format!("required by a bound in `{}`", item_name),
-                    );
+                    err.span_note(tcx.def_span(item_def_id), &descr);
                 }
             }
             ObligationCauseCode::ObjectCastObligation(object_ty) => {
@@ -2071,6 +2075,9 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             }
             ObligationCauseCode::SizedYieldType => {
                 err.note("the yield type of a generator must have a statically known size");
+            }
+            ObligationCauseCode::SizedBoxType => {
+                err.note("the type of a box expression must have a statically known size");
             }
             ObligationCauseCode::AssignmentLhsSized => {
                 err.note("the left-hand-side of an assignment must have a statically known size");
@@ -2335,9 +2342,6 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     predicate
                 ));
             }
-            ObligationCauseCode::ReturnType
-            | ObligationCauseCode::ReturnValue(_)
-            | ObligationCauseCode::BlockTailExpression(_) => (),
             ObligationCauseCode::TrivialBound => {
                 err.help("see issue #48214");
                 if tcx.sess.opts.unstable_features.is_nightly_build() {

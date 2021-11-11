@@ -8,7 +8,7 @@ use rustc_hir::{
     self as hir,
     def::{CtorOf, DefKind, Res},
     def_id::LocalDefId,
-    intravisit::{walk_ty, NestedVisitorMap, Visitor},
+    intravisit::{walk_inf, walk_ty, NestedVisitorMap, Visitor},
     Expr, ExprKind, FnRetTy, FnSig, GenericArg, HirId, Impl, ImplItemKind, Item, ItemKind, Path, QPath, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass, LintContext};
@@ -20,19 +20,20 @@ use rustc_span::Span;
 use rustc_typeck::hir_ty_to_ty;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for unnecessary repetition of structure name when a
+    /// ### What it does
+    /// Checks for unnecessary repetition of structure name when a
     /// replacement with `Self` is applicable.
     ///
-    /// **Why is this bad?** Unnecessary repetition. Mixed use of `Self` and struct
+    /// ### Why is this bad?
+    /// Unnecessary repetition. Mixed use of `Self` and struct
     /// name
     /// feels inconsistent.
     ///
-    /// **Known problems:**
+    /// ### Known problems
     /// - Unaddressed false negative in fn bodies of trait implementations
     /// - False positive with assotiated types in traits (#4140)
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// struct Foo {}
     /// impl Foo {
@@ -169,7 +170,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
                 //
                 // See also https://github.com/rust-lang/rust-clippy/issues/2894.
                 for (impl_hir_ty, trait_sem_ty) in impl_inputs_outputs.zip(trait_method_sig.inputs_and_output) {
-                    if trait_sem_ty.walk().any(|inner| inner == self_ty.into()) {
+                    if trait_sem_ty.walk(cx.tcx).any(|inner| inner == self_ty.into()) {
                         let mut visitor = SkipTyCollector::default();
                         visitor.visit_ty(impl_hir_ty);
                         types_to_skip.extend(visitor.types_to_skip);
@@ -263,6 +264,11 @@ struct SkipTyCollector {
 impl<'tcx> Visitor<'tcx> for SkipTyCollector {
     type Map = Map<'tcx>;
 
+    fn visit_infer(&mut self, inf: &hir::InferArg) {
+        self.types_to_skip.push(inf.hir_id);
+
+        walk_inf(self, inf);
+    }
     fn visit_ty(&mut self, hir_ty: &hir::Ty<'_>) {
         self.types_to_skip.push(hir_ty.hir_id);
 
