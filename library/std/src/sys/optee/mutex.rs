@@ -69,4 +69,3 @@ impl ReentrantMutex {
 
     pub unsafe fn destroy(&self) {}
 }
-

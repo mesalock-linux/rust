@@ -43,5 +43,3 @@ impl ExactSizeIterator for Args {
 impl DoubleEndedIterator for Args {
     fn next_back(&mut self) -> Option<OsString> { self.iter.next_back() }
 }
-
-
