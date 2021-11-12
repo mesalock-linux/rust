@@ -73,8 +73,8 @@ pub fn env() -> Env {
     panic!("unsupported")
 }
 
-pub fn getenv(_k: &OsStr) -> io::Result<Option<OsString>> {
-    unsupported()
+pub fn getenv(_k: &OsStr) -> Option<OsString> {
+    None
 }
 
 pub fn setenv(_k: &OsStr, _v: &OsStr) -> io::Result<()> {
